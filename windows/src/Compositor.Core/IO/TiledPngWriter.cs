@@ -17,8 +17,7 @@ public static class TiledPngWriter
 
     public static void Write(CanvasDocument document, string path, int tileSize = DefaultTileSize)
     {
-        using var file = File.Create(path);
-        Write(document, file, tileSize);
+        AtomicImageWrite.Write(path, output => Write(document, output, tileSize));
     }
 
     public static void Write(CanvasDocument document, Stream output, int tileSize = DefaultTileSize)
@@ -34,6 +33,14 @@ public static class TiledPngWriter
         header[11] = 0; // the adaptive filter set
         header[12] = 0; // not interlaced
         WriteChunk(output, "IHDR", header);
+        var resolution = double.IsFinite(document.Resolution) && document.Resolution > 0
+            ? document.Resolution : 72;
+        var pixelsPerMeter = (int)Math.Clamp(Math.Round(resolution / 0.0254), 1, int.MaxValue);
+        Span<byte> density = stackalloc byte[9];
+        WriteBigEndian(density[..4], pixelsPerMeter);
+        WriteBigEndian(density.Slice(4, 4), pixelsPerMeter);
+        density[8] = 1; // meters
+        WriteChunk(output, "pHYs", density);
 
         using (var chunks = new ChunkStream(output))
         using (var deflate = new ZLibStream(chunks, CompressionLevel.Optimal, leaveOpen: true))

@@ -8,6 +8,8 @@ public enum ProjectError
     MissingImage,
     TooLarge,
     Encode,
+    UnsafeDestination,
+    ExtraFiles,
 }
 
 public sealed class ProjectException : Exception
@@ -32,6 +34,10 @@ public sealed class ProjectException : Exception
         ProjectError.TooLarge =>
             $"This project exceeds the supported canvas, layer, file-size, or {Model.DocumentLimits.DocumentBudgetMegapixels}-megapixel document limit.",
         ProjectError.Encode => "An image could not be saved. The previous project has not been replaced.",
+        ProjectError.UnsafeDestination =>
+            "The existing destination is not a readable Compositor project or is a link. Save to a new folder to keep its contents safe.",
+        ProjectError.ExtraFiles =>
+            "The destination contains files or folders outside the Compositor project. Move those items elsewhere or save to a new folder.",
         _ => "The project could not be read or written.",
     };
 }

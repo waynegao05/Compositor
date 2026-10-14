@@ -23,6 +23,7 @@ public static class ProjectStore
     /// </summary>
     public static void Validate(ProjectManifest manifest)
     {
+        if (manifest is null || manifest.Layers is null) throw new ProjectException(ProjectError.Invalid);
         if (manifest.Format != ProjectManifest.FormatIdentifier) throw new ProjectException(ProjectError.Invalid);
         if (!ProjectManifest.IsSupported(manifest.Version)) throw new ProjectException(ProjectError.Version, manifest.Version);
         if (manifest.ColorSpace != "sRGB") throw new ProjectException(ProjectError.Invalid);
@@ -39,6 +40,8 @@ public static class ProjectStore
         var version = manifest.Version;
         foreach (var layer in manifest.Layers)
         {
+            // Nullable annotations do not constrain collection elements read from JSON.
+            if (!HasRequiredStructure(layer)) throw new ProjectException(ProjectError.Invalid);
             if (layer.Text is { } text)
             {
                 // Per-letter colors arrived in version 10, per-letter faces in version 11.
@@ -100,6 +103,23 @@ public static class ProjectStore
         ValidateGuides(manifest);
     }
 
+    private static bool HasRequiredStructure(ProjectLayerRecord? layer)
+    {
+        if (layer is null || layer.Transform is null) return false;
+        if (layer.Text is { } text && (text.ColorRuns?.Any(run => run is null) == true
+            || text.FontRuns?.Any(run => run is null) == true)) return false;
+        if (layer.Adjustment is not { } adjustment) return true;
+        if (adjustment.Levels is null || adjustment.Curves is null) return false;
+        if (adjustment.Curves.Channels?.Any(points => points is null || points.Any(point => point is null)) == true)
+            return false;
+        if (adjustment.HsvSettings is { } hsv && (hsv.Adjustments is null || hsv.Bands is null
+            || hsv.Adjustments.Values.Any(value => value is null) || hsv.Bands.Values.Any(value => value is null)))
+            return false;
+        if (adjustment.GradientMapSettings is { } gradient && (gradient.Shadows is null || gradient.Highlights is null))
+            return false;
+        return true;
+    }
+
     private static void ValidateGuides(ProjectManifest manifest)
     {
         var guides = manifest.Guides ?? [];
@@ -112,7 +132,7 @@ public static class ProjectStore
         var ids = new HashSet<Guid>();
         foreach (var guide in guides)
         {
-            if (!ids.Add(guide.ID) || !double.IsFinite(guide.Position) || Math.Abs(guide.Position) > 1_000_000)
+            if (guide is null || !ids.Add(guide.ID) || !double.IsFinite(guide.Position) || Math.Abs(guide.Position) > 1_000_000)
             {
                 throw new ProjectException(ProjectError.Invalid);
             }
@@ -141,7 +161,14 @@ public static class ProjectStore
     /// moves it into place. A watcher sees either the old package or the new one, never a half-written
     /// one; the only gap is the pair of directory renames Windows needs to swap a package.
     /// </summary>
-    public static void Save(ProjectSnapshot snapshot, string path, byte[]? quickLookPreview = null)
+    public static void Save(ProjectSnapshot snapshot, string path, byte[]? quickLookPreview = null) =>
+        SaveCore(snapshot, path, quickLookPreview, null);
+
+    internal static void SaveWithCheckpoints(ProjectSnapshot snapshot, string path, Action<ProjectSaveCheckpoint> checkpoint) =>
+        SaveCore(snapshot, path, null, checkpoint);
+
+    private static void SaveCore(ProjectSnapshot snapshot, string path, byte[]? quickLookPreview,
+        Action<ProjectSaveCheckpoint>? checkpoint)
     {
         Validate(snapshot.Manifest);
 
@@ -173,12 +200,16 @@ public static class ProjectStore
         var metadata = ManifestJson.Serialize(snapshot.Manifest);
         if (metadata.Length > Model.DocumentLimits.MaxManifestBytes) throw new ProjectException(ProjectError.TooLarge);
 
-        var target = Path.GetFullPath(path);
-        var parent = Path.GetDirectoryName(target) ?? throw new ProjectException(ProjectError.Encode);
-        var staging = Path.Combine(parent, $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.tmp");
-        var backup = Path.Combine(parent, $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.old");
+        var target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        _ = Path.GetDirectoryName(target) ?? throw new ProjectException(ProjectError.Encode);
+        var transactionID = Guid.NewGuid();
+        var staging = ProjectRecovery.SidecarPath(target, transactionID, ProjectRecoveryKind.PendingSave);
+        var backup = ProjectRecovery.SidecarPath(target, transactionID, ProjectRecoveryKind.PreviousSave);
+        using var operation = ProjectRecovery.AcquireOperationLocks(transactionID, target);
         lock (SaveLock)
         {
+            ProjectRecovery.Transaction? transaction = null;
+            var interrupted = false;
             try
             {
                 Directory.CreateDirectory(staging);
@@ -186,42 +217,119 @@ public static class ProjectStore
                 Directory.CreateDirectory(imagesDirectory);
                 foreach (var (filename, bytes) in images)
                 {
-                    File.WriteAllBytes(Path.Combine(imagesDirectory, filename), bytes);
+                    ProjectRecovery.WriteDurable(Path.Combine(imagesDirectory, filename), bytes);
                 }
                 if (quickLookPreview is not null)
                 {
                     var quickLook = Path.Combine(staging, QuickLookFolderName);
                     Directory.CreateDirectory(quickLook);
-                    File.WriteAllBytes(Path.Combine(quickLook, QuickLookPreviewName), quickLookPreview);
+                    ProjectRecovery.WriteDurable(Path.Combine(quickLook, QuickLookPreviewName), quickLookPreview);
                 }
-                File.WriteAllBytes(Path.Combine(staging, ManifestName), metadata);
+                ProjectRecovery.WriteDurable(Path.Combine(staging, ManifestName), metadata);
+                checkpoint?.Invoke(ProjectSaveCheckpoint.Staged);
 
-                var replaced = false;
+                // Validate immediately before replacement. An ordinary directory, a damaged project, or
+                // files the project does not own must never disappear as a side effect of saving.
+                VerifyReplacementTarget(target);
+                transaction = ProjectRecovery.Register(transactionID, target);
+                checkpoint?.Invoke(ProjectSaveCheckpoint.Journaled);
+                ProjectRecovery.CheckDestination(transaction);
+                VerifyReplacementTarget(target);
                 if (Directory.Exists(target))
                 {
                     Directory.Move(target, backup);
-                    replaced = true;
                 }
-                try
-                {
-                    Directory.Move(staging, target);
-                }
-                catch
-                {
-                    if (replaced) Directory.Move(backup, target);
-                    throw;
-                }
-                if (replaced) TryDelete(backup);
+                checkpoint?.Invoke(ProjectSaveCheckpoint.PreviousMoved);
+                Directory.Move(staging, target);
+                checkpoint?.Invoke(ProjectSaveCheckpoint.ReplacementMoved);
+                ProjectRecovery.Complete(transaction);
+            }
+            catch (ProjectSaveInterruptionException)
+            {
+                // Test-only interruption checkpoints model an exited process without killing the runner.
+                interrupted = true;
+                throw;
+            }
+            catch
+            {
+                if (transaction is not null) ProjectRecovery.TryRollback(transaction);
+                throw;
             }
             finally
             {
-                if (Directory.Exists(staging)) TryDelete(staging);
+                // A registered staging package can hold the person's newest edits. Keep it discoverable
+                // after a failure; before registration the original destination was never moved.
+                if (transaction is null && !interrupted && Directory.Exists(staging)) TryDelete(staging);
+            }
+        }
+    }
+
+    private static void VerifyReplacementTarget(string target)
+    {
+        FileAttributes attributes;
+        try
+        {
+            attributes = File.GetAttributes(target);
+        }
+        catch (FileNotFoundException) { return; }
+        catch (DirectoryNotFoundException) { return; }
+        if (!attributes.HasFlag(FileAttributes.Directory) || attributes.HasFlag(FileAttributes.ReparsePoint))
+            throw new ProjectException(ProjectError.UnsafeDestination);
+
+        ProjectSnapshot existing;
+        try
+        {
+            existing = LoadUnderOperationLock(target);
+        }
+        catch (Exception error) when (error is ProjectException or IOException or UnauthorizedAccessException)
+        {
+            throw new ProjectException(ProjectError.UnsafeDestination);
+        }
+        using (existing)
+        {
+            var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+            var files = new HashSet<string>(comparer)
+            {
+                ManifestName,
+                Path.Combine(QuickLookFolderName, QuickLookPreviewName),
+            };
+            foreach (var layer in existing.Manifest.Layers)
+            {
+                if (layer.ImageFile is { } image) files.Add(Path.Combine(ImagesName, image));
+                if (layer.MaskFile is { } mask) files.Add(Path.Combine(ImagesName, mask));
+            }
+            var directories = new HashSet<string>([ImagesName, QuickLookFolderName], comparer);
+            CheckDirectory(target);
+
+            void CheckDirectory(string directory)
+            {
+                foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+                {
+                    var entryAttributes = File.GetAttributes(entry);
+                    // Inspect the entry before recursing: a link can point outside this package.
+                    if (entryAttributes.HasFlag(FileAttributes.ReparsePoint))
+                        throw new ProjectException(ProjectError.UnsafeDestination);
+                    var relative = Path.GetRelativePath(target, entry);
+                    if (entryAttributes.HasFlag(FileAttributes.Directory))
+                    {
+                        if (!directories.Contains(relative)) throw new ProjectException(ProjectError.ExtraFiles);
+                        CheckDirectory(entry);
+                    }
+                    else if (!files.Contains(relative)) throw new ProjectException(ProjectError.ExtraFiles);
+                }
             }
         }
     }
 
     /// <summary>Reads a package. Nothing is decoded until the manifest has been validated.</summary>
     public static ProjectSnapshot Load(string path)
+    {
+        using var operation = ProjectRecovery.AcquireReadLock(path);
+        return LoadUnderOperationLock(path);
+    }
+
+    /// <summary>The caller holds the target path lock, and the transaction lock for its sidecars.</summary>
+    internal static ProjectSnapshot LoadUnderOperationLock(string path)
     {
         var package = Path.GetFullPath(path);
         if (!Directory.Exists(package)) throw new ProjectException(ProjectError.Invalid);
@@ -233,7 +341,7 @@ public static class ProjectStore
         {
             header = ManifestJson.ReadHeader(metadata);
         }
-        catch (JsonException)
+        catch (Exception error) when (error is JsonException or FormatException or OverflowException or InvalidOperationException)
         {
             throw new ProjectException(ProjectError.Invalid);
         }

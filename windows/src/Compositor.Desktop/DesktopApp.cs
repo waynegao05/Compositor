@@ -9,6 +9,7 @@ public sealed class DesktopApp : Application
 {
     public override void Initialize()
     {
+        AppDiagnostics.AttachDispatcher();
         // The Mac build asks for the dark appearance and draws its own greys on top of it
         // (ContentView's `.preferredColorScheme(.dark)`), so the port does the same rather than
         // following whatever the machine is set to — a light menu bar over a dark canvas was
@@ -27,7 +28,9 @@ public sealed class DesktopApp : Application
         if (_theme is { } theme) Skin.Apply(theme);
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            desktop.MainWindow = new MainWindow();
+            var window = new MainWindow();
+            desktop.MainWindow = window;
+            window.Opened += async (_, _) => await window.StartDesktopSessionAsync(desktop.Args ?? []);
         }
         base.OnFrameworkInitializationCompleted();
     }

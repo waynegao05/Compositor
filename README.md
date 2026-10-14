@@ -1,5 +1,11 @@
 # Compositor
 
+简体中文与 Windows 11 预览版：[Windows 使用与构建说明](windows/README.zh-CN.md) · [macOS 中文说明](docs/mac-zh-Hans.md)
+修改范围、验证结果及下一轮清单：[第一轮工作记录](docs/IMPLEMENTATION.zh-CN.md)。
+当前预览版 `1.3.7-zh.4`：[第四轮工作记录](docs/IMPLEMENTATION-04.zh-CN.md)，包含中断保存恢复、文件拖放、启动路径和系统图像剪贴板。
+此前记录：[第三轮工作记录](docs/IMPLEMENTATION-03.zh-CN.md)，包含目录覆盖保护、文字编辑保护和 PSD/PSB 导入修复。
+此前记录：[第二轮工作记录](docs/IMPLEMENTATION-02.zh-CN.md)，包含诊断和标准中文验收工程。
+
 Adobe Photoshop costs too much and tools like GIMP don’t feel familiar enough for me to stay in flow. That’s why I built Compositor.
 
 The goal was to create a full-featured image editor that is completely free and open source. I used to use Photoshop for compositing and post-processing, so Compositor is built around that workflow - with the tools needed to create a pixel-perfect final image.

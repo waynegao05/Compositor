@@ -1,0 +1,11 @@
+{
+  "This is not a valid Compositor project, or its metadata is damaged.": "此文件夹不是有效的 Compositor 工程，或工程元数据已损坏。",
+  "This project uses format version {0}. This app supports versions {1} through {2}.": "此工程使用格式版本 {0}，当前应用支持版本 {1} 至 {2}。",
+  "An image inside the project is missing or damaged. The current document has not been replaced.": "工程内的图像缺失或损坏，当前文档保持原样。",
+  "This project exceeds the supported canvas, layer, file-size, or {0}-megapixel document limit.": "此工程超出支持的画布、图层、文件大小或 {0} 百万像素文档上限。",
+  "An image could not be saved. The previous project has not been replaced.": "图像保存失败，原工程保持原样。",
+  "The image could not be read. It may be damaged or unavailable.": "无法读取图像，文件可能已损坏或无法访问。",
+  "This image format is not supported by this import operation. Try PNG, JPEG, TIFF or SVG.": "当前导入操作不支持此图像格式，请尝试 PNG、JPEG、TIFF 或 SVG。",
+  "This import exceeds the {0:N0}-pixel side limit or the {1}-megapixel document budget.": "导入图像超出单边 {0:N0} 像素限制或文档 {1} 百万像素上限。",
+  "The project could not be read or written.": "无法读取或写入工程。"
+}

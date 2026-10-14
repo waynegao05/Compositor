@@ -19,7 +19,7 @@ internal sealed class CanvasSizeDialog : DialogWindow
 
     private CanvasSizeDialog(int width, int height, int anchor)
     {
-        Title = "Canvas Size";
+        Title = L10n.T("Canvas Size");
         Width = 380;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
@@ -32,12 +32,12 @@ internal sealed class CanvasSizeDialog : DialogWindow
             "Top left", "Top", "Top right",
             "Left", "Centre", "Right",
             "Bottom left", "Bottom", "Bottom right",
-        };
+        }.Select(L10n.T).ToArray();
         _anchor.SelectedIndex = Math.Clamp(anchor, 0, 8);
         _anchor.Width = 140;
 
-        var ok = new Button { Content = "OK", IsDefault = true };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
+        var ok = new Button { Content = L10n.T("OK"), IsDefault = true };
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
         ok.Click += (_, _) => Accept();
         cancel.Click += (_, _) => Close();
 
@@ -73,7 +73,7 @@ internal sealed class CanvasSizeDialog : DialogWindow
         Spacing = 8,
         Children =
         {
-            new TextBlock { Text = label, Width = 120, VerticalAlignment = VerticalAlignment.Center },
+            new TextBlock { Text = L10n.T(label), Width = 120, VerticalAlignment = VerticalAlignment.Center },
             control,
         },
     };

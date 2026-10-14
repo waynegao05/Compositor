@@ -72,7 +72,7 @@ struct JPEGExportSheet: View {
                 Text("\(raster.image.width.formatted()) × \(raster.image.height.formatted()) px · sRGB")
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let error { Text(error).foregroundStyle(.red) }
+                if let error { Text(L10n.tr(error)).foregroundStyle(.red) }
                 else if readyOptions == options, let result {
                     Text(ByteCountFormatter.string(fromByteCount: Int64(result.data.count), countStyle: .file)).monospacedDigit()
                 } else { Text("Updating…").foregroundStyle(.secondary) }

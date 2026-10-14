@@ -7,6 +7,16 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Localization/*.zh-Hans.json" WithCulture="false" />
+  </ItemGroup>
+
+  <!-- The core and headless checks can run on a Linux development host. Windows publications
+       use the Win32 assets already supplied by SkiaSharp. -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.152.1" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="BitMiracle.LibTiff.NET" Version="2.4.660" />
     <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.17.2" />
     <PackageReference Include="Sdcb.LibRaw" Version="0.21.1.7" />

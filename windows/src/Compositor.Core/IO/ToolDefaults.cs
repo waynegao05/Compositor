@@ -14,8 +14,7 @@ public sealed class ToolDefaults
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 
     /// <summary>Where the switches are kept for whoever is using the app.</summary>
-    public static string DefaultPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Compositor", "tools.json");
+    public static string DefaultPath => Path.Combine(AppDataPaths.Root, "tools.json");
 
     public bool ShowGrid { get; set; }
 

@@ -1,0 +1,9 @@
+# Keep source fixtures and scripts identical in Windows and Unix checkouts.
+/windows/**/*.cs text eol=lf
+/windows/**/*.csproj text eol=lf
+/windows/**/*.json text eol=lf
+/windows/**/*.md text eol=lf
+/windows/**/*.ps1 text eol=lf
+/windows/**/*.txt text eol=lf
+/windows/*.slnx text eol=lf
+/.github/workflows/windows.yml text eol=lf

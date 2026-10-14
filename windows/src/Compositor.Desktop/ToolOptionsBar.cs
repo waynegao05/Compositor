@@ -104,7 +104,7 @@ internal sealed class ToolOptionsBar : Border
             On("lasso", tool is Tool.Lasso or Tool.Polygon);
             On("eye", tool == Tool.Eyedropper);
             On("wand", tool == Tool.Wand);
-                On("gradient", tool == Tool.Gradient);
+            On("gradient", tool == Tool.Gradient);
             On("shape", tool == Tool.Shape);
             On("corner", tool == Tool.Shape && _options.Shape != ShapeKind.Line);
             On("linewidth", tool == Tool.Shape && _options.Shape == ShapeKind.Line);
@@ -112,7 +112,7 @@ internal sealed class ToolOptionsBar : Border
             On("transform", tool == Tool.Move && hasDocument);
             On("type", tool == Tool.Type);
             On("zoom", tool == Tool.Pan);
-            _title.Text = Names.TryGetValue(tool, out var name) ? name : "";
+            _title.Text = Names.TryGetValue(tool, out var name) ? L10n.T(name) : "";
             // The marquee's shape and the lasso's kind *are* the tool in hand, so the bar follows the tool
             // rather than the other way round: picking one here asks for the tool the window already has.
             _marqueeShape.SelectedIndex = tool == Tool.Ellipse ? 1 : 0;
@@ -126,7 +126,7 @@ internal sealed class ToolOptionsBar : Border
     }
 
     /// <summary>The zoom the window is showing, for the Pan and Zoom rows.</summary>
-    public void ShowZoom(double percent) => _zoom.Text = $"zoom {percent:0}%";
+    public void ShowZoom(double percent) => _zoom.Text = L10n.F("Zoom {0:0}%", percent);
 
     /// <summary>Whether a row is on show, which is what the self check reads to see the gating works.</summary>
     internal bool Shows(string name) => _named.TryGetValue(name, out var cells) && cells[0].IsVisible;
@@ -137,25 +137,30 @@ internal sealed class ToolOptionsBar : Border
     /// </summary>
     internal void PressAntialias(bool on) => _antialias.IsChecked = on;
 
+    /// <summary>Chooses the mask color through the same event as the options-bar menu.</summary>
+    internal void ChooseMaskPaint(bool reveal) => _maskPaint.SelectedIndex = reveal ? 1 : 0;
+
+    internal bool MaskPaintReveals => _maskPaint.SelectedIndex == 1;
+
     /// <summary>The names of the rows on show, in the order they were built.</summary>
     internal IEnumerable<string> Showing => _named.Where(entry => entry.Value[0].IsVisible).Select(entry => entry.Key);
 
     /// <summary>Every row's value read back off its own control, which is what the bar is showing.</summary>
     private void Refresh()
     {
-        _size.Content = $"Size {_options.Brush.Diameter:0}";
-        _hardness.Content = $"Hardness {_options.Brush.Hardness * 100:0}%";
-        _opacity.Content = $"Opacity {_options.Brush.Opacity * 100:0}%";
-        _blurRadius.Content = $"Radius {_options.Brush.BlurRadius:0.#}";
-        _tolerance.Content = $"Tolerance {_options.Wand.Tolerance}";
-        _sampleSize.Content = $"Sample {_options.Wand.Radius}";
-        _corner.Content = $"Radius {_options.ShapeCornerRadius:0}";
-        _lineWidth.Content = $"Width {_options.ShapeLineWidth:0}";
+        _size.Content = L10n.F("Size {0:0}", _options.Brush.Diameter);
+        _hardness.Content = L10n.F("Hardness {0:0}%", _options.Brush.Hardness * 100);
+        _opacity.Content = L10n.F("Opacity {0:0}%", _options.Brush.Opacity * 100);
+        _blurRadius.Content = L10n.F("Radius {0:0.#}", _options.Brush.BlurRadius);
+        _tolerance.Content = L10n.F("Tolerance {0}", _options.Wand.Tolerance);
+        _sampleSize.Content = L10n.F("Sample {0}", _options.Wand.Radius);
+        _corner.Content = L10n.F("Radius {0:0}", _options.ShapeCornerRadius);
+        _lineWidth.Content = L10n.F("Width {0:0}", _options.ShapeLineWidth);
         _fill.Show(_options.Brush.Red, _options.Brush.Green, _options.Brush.Blue);
         _gradientFill.Show(_options.GradientBackground.Red, _options.GradientBackground.Green,
             _options.GradientBackground.Blue);
         _brushMode.SelectedIndex = _options.Erase ? 1 : 0;
-        _maskPaint.SelectedIndex = _options.PaintOnMask ? 1 : 0;
+        _maskPaint.SelectedIndex = _options.Erase ? 0 : 1;
         _healMode.SelectedIndex = (int)_options.Brush.Healing;
         _aligned.IsChecked = _options.Brush.CloneAligned;
         _cloneAll.SelectedIndex = _options.Brush.CloneAllLayers ? 1 : 0;
@@ -207,24 +212,24 @@ internal sealed class ToolOptionsBar : Border
     private readonly ComboBox _brushMode = new();
     private readonly ComboBox _maskPaint = new();
     private readonly ComboBox _healMode = new();
-    private readonly CheckBox _aligned = new() { Content = "Aligned" };
+    private readonly CheckBox _aligned = new() { Content = L10n.T("Aligned") };
     private readonly ComboBox _cloneAll = new();
     private readonly ComboBox _marqueeShape = new();
     private readonly ComboBox _lassoKind = new();
-    private readonly CheckBox _contiguous = new() { Content = "Contiguous" };
-    private readonly CheckBox _antialias = new() { Content = "Anti-alias" };
-    private readonly CheckBox _sampleRing = new() { Content = "Sample Ring" };
+    private readonly CheckBox _contiguous = new() { Content = L10n.T("Contiguous") };
+    private readonly CheckBox _antialias = new() { Content = L10n.T("Anti-alias") };
+    private readonly CheckBox _sampleRing = new() { Content = L10n.T("Sample Ring") };
     private readonly ComboBox _wandAll = new();
     private readonly ComboBox _shapeKind = new();
     private readonly ComboBox _gradientKind = new();
     private readonly ComboBox _gradientTo = new();
-    private readonly CheckBox _gradientReversed = new() { Content = "Reverse" };
+    private readonly CheckBox _gradientReversed = new() { Content = L10n.T("Reverse") };
     private readonly ComboBox _cropRatio = new() { Width = 150 };
-    private readonly Button _cropApply = new() { Content = "Apply Crop" };
-    private readonly Button _cropCancel = new() { Content = "Cancel" };
-    private readonly Button _flipH = new() { Content = "Flip H" };
-    private readonly Button _flipV = new() { Content = "Flip V" };
-    private readonly Button _editText = new() { Content = "Edit Text…" };
+    private readonly Button _cropApply = new() { Content = L10n.T("Apply Crop") };
+    private readonly Button _cropCancel = new() { Content = L10n.T("Cancel") };
+    private readonly Button _flipH = new() { Content = L10n.T("Flip H") };
+    private readonly Button _flipV = new() { Content = L10n.T("Flip V") };
+    private readonly Button _editText = new() { Content = L10n.T("Edit Text…") };
 
     /// <summary>What each tool's strip is called, which is the Mac's own title.</summary>
     private static readonly Dictionary<Tool, string> Names = new()
@@ -274,13 +279,18 @@ internal sealed class ToolOptionsBar : Border
         _fill.Click += (_, _) => ColourAsked?.Invoke(true);
         _gradientFill.Click += (_, _) => ColourAsked?.Invoke(false);
 
-        _brushMode.ItemsSource = new[] { "Paint", "Erase" };
+        _brushMode.ItemsSource = new[] { "Paint", "Erase" }.Select(L10n.T).ToArray();
         _brushMode.SelectedIndex = 0;
         _brushMode.SelectionChanged += (_, _) => Set(ref _options.Erase, _brushMode.SelectedIndex == 1);
-        _maskPaint.ItemsSource = new[] { "Paint Black · Hide", "Paint White · Reveal" };
+        _maskPaint.ItemsSource = new[] { "Paint Black · Hide", "Paint White · Reveal" }.Select(L10n.T).ToArray();
         _maskPaint.SelectedIndex = 0;
-        _maskPaint.SelectionChanged += (_, _) => Set(ref _options.PaintOnMask, _maskPaint.SelectedIndex == 1);
-        _healMode.ItemsSource = new[] { "Content-Aware", "Create Texture", "Proximity Match" };
+        _maskPaint.SelectionChanged += (_, _) =>
+        {
+            if (_loading) return;
+            _options.PaintOnMask = true;
+            Set(ref _options.Erase, _maskPaint.SelectedIndex == 0);
+        };
+        _healMode.ItemsSource = new[] { "Content-Aware", "Create Texture", "Proximity Match" }.Select(L10n.T).ToArray();
         _healMode.SelectedIndex = 0;
         _healMode.SelectionChanged += (_, _) =>
         {
@@ -298,7 +308,7 @@ internal sealed class ToolOptionsBar : Border
         _sampleRing.IsChecked = _options.ShowsSampleRing;
         _sampleRing.IsCheckedChanged += (_, _) =>
             Set(ref _options.ShowsSampleRing, _sampleRing.IsChecked == true);
-        _cloneAll.ItemsSource = new[] { "Sample: This Layer", "Sample: All Layers" };
+        _cloneAll.ItemsSource = new[] { "Sample: This Layer", "Sample: All Layers" }.Select(L10n.T).ToArray();
         _cloneAll.SelectedIndex = 0;
         _cloneAll.SelectionChanged += (_, _) =>
         {
@@ -306,7 +316,7 @@ internal sealed class ToolOptionsBar : Border
             Set(ref _options.Brush, brush);
         };
 
-        _marqueeShape.ItemsSource = new[] { "Rectangle", "Ellipse" };
+        _marqueeShape.ItemsSource = new[] { "Rectangle", "Ellipse" }.Select(L10n.T).ToArray();
         _marqueeShape.SelectedIndex = 0;
         _marqueeShape.SelectionChanged += (_, _) =>
         {
@@ -314,7 +324,7 @@ internal sealed class ToolOptionsBar : Border
             _marqueeEllipse = _marqueeShape.SelectedIndex == 1;
             MarqueeShapeChosen?.Invoke(_marqueeEllipse);
         };
-        _lassoKind.ItemsSource = new[] { "Freehand", "Polygonal" };
+        _lassoKind.ItemsSource = new[] { "Freehand", "Polygonal" }.Select(L10n.T).ToArray();
         _lassoKind.SelectedIndex = 0;
         _lassoKind.SelectionChanged += (_, _) =>
         {
@@ -326,11 +336,11 @@ internal sealed class ToolOptionsBar : Border
             var wand = _options.Wand with { Contiguous = _contiguous.IsChecked == true };
             Set(ref _options.Wand, wand);
         };
-        _wandAll.ItemsSource = new[] { "Sample: This Layer", "Sample: All Layers" };
+        _wandAll.ItemsSource = new[] { "Sample: This Layer", "Sample: All Layers" }.Select(L10n.T).ToArray();
         _wandAll.SelectedIndex = 0;
         _wandAll.SelectionChanged += (_, _) => Set(ref _options.WandAllLayers, _wandAll.SelectedIndex == 1);
 
-        _shapeKind.ItemsSource = new[] { "Rectangle", "Ellipse", "Line" };
+        _shapeKind.ItemsSource = new[] { "Rectangle", "Ellipse", "Line" }.Select(L10n.T).ToArray();
         _shapeKind.SelectedIndex = 0;
         _shapeKind.SelectionChanged += (_, _) =>
         {
@@ -341,10 +351,10 @@ internal sealed class ToolOptionsBar : Border
             On("corner", shape != ShapeKind.Line);
             On("linewidth", shape == ShapeKind.Line);
         };
-        _gradientKind.ItemsSource = new[] { "Linear", "Radial", "Angle", "Reflected", "Diamond" };
+        _gradientKind.ItemsSource = new[] { "Linear", "Radial", "Angle", "Reflected", "Diamond" }.Select(L10n.T).ToArray();
         _gradientKind.SelectedIndex = 0;
         _gradientKind.SelectionChanged += (_, _) => Set(ref _options.Gradient, (GradientShape)Math.Max(0, _gradientKind.SelectedIndex));
-        _gradientTo.ItemsSource = new[] { "To nothing", "To the background color" };
+        _gradientTo.ItemsSource = new[] { "To nothing", "To the background color" }.Select(L10n.T).ToArray();
         _gradientTo.SelectedIndex = 0;
         _gradientTo.SelectionChanged += (_, _) => Set(ref _options.GradientToBackground, _gradientTo.SelectedIndex == 1);
         _gradientReversed.IsCheckedChanged += (_, _) => Set(ref _options.GradientReversed, _gradientReversed.IsChecked == true);
@@ -397,7 +407,7 @@ internal sealed class ToolOptionsBar : Border
     /// <summary>The crop ratios the window offers, so the bar's own list is the same list.</summary>
     public void ShowCropRatios(IReadOnlyList<string> ratios)
     {
-        _cropRatio.ItemsSource = ratios;
+        _cropRatio.ItemsSource = ratios.Select(L10n.T).ToArray();
         _cropRatio.SelectedIndex = 0;
     }
 
@@ -411,7 +421,9 @@ internal sealed class ToolOptionsBar : Border
         // the window is the one that asked for the filling, and answering it would be a loop.
         if (_loading) return;
         field = value;
-        Refresh();
+        _loading = true;
+        try { Refresh(); }
+        finally { _loading = false; }
         Changed?.Invoke();
     }
 

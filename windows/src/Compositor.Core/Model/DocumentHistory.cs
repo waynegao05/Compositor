@@ -35,6 +35,10 @@ public sealed class DocumentHistory
     public string UndoName => _past.Count > 0 ? _past[^1].Name : "";
     public string RedoName => _future.Count > 0 ? _future[^1].Name : "";
     public bool IsModified => _revision != _savedRevision;
+    public bool HasPendingEdit => _depth > 0;
+
+    /// <summary>Changes whenever a new edit or history navigation invalidates an asynchronous result.</summary>
+    public long EditGeneration { get; private set; }
     public int UndoCount => _past.Count;
 
     /// <summary>The document as it stands, for a save that captures it now and finishes later.</summary>
@@ -50,6 +54,7 @@ public sealed class DocumentHistory
 
     public void Reset()
     {
+        EditGeneration++;
         _past.Clear();
         _future.Clear();
         _pending = null;
@@ -62,6 +67,7 @@ public sealed class DocumentHistory
     {
         if (_depth == 0)
         {
+            EditGeneration++;
             _pending = new Snapshot(document?.Clone(), activeLayer, _revision);
             _pendingName = name;
         }
@@ -85,6 +91,7 @@ public sealed class DocumentHistory
     public Snapshot? Undo()
     {
         if (!CanUndo) return null;
+        EditGeneration++;
         var entry = _past[^1];
         _past.RemoveAt(_past.Count - 1);
         _future.Add(entry);
@@ -96,6 +103,7 @@ public sealed class DocumentHistory
     public Snapshot? Redo()
     {
         if (!CanRedo) return null;
+        EditGeneration++;
         var entry = _future[^1];
         _future.RemoveAt(_future.Count - 1);
         _past.Add(entry);

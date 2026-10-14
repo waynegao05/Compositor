@@ -28,7 +28,7 @@ internal sealed class GridSettingsDialog : DialogWindow
 
     internal GridSettingsDialog(LayoutGrid start)
     {
-        Title = "Grid Settings";
+        Title = L10n.T("Grid Settings");
         Width = 380;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
@@ -36,8 +36,8 @@ internal sealed class GridSettingsDialog : DialogWindow
         _spacing = new TextBox { Text = start.Spacing.ToString(), Width = 100 };
         _subdivisions = new TextBox { Text = start.Subdivisions.ToString(), Width = 100 };
 
-        var ok = new Button { Content = "OK", IsDefault = true };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
+        var ok = new Button { Content = L10n.T("OK"), IsDefault = true };
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
         ok.Click += (_, _) => Accept();
         cancel.Click += (_, _) => Close();
 
@@ -51,8 +51,8 @@ internal sealed class GridSettingsDialog : DialogWindow
                 Row("Subdivisions", _subdivisions),
                 new TextBlock
                 {
-                    Text = $"Between {LayoutGrid.LeastSpacing} and {LayoutGrid.MostSpacing} pixels apart, "
-                        + $"split into at most {LayoutGrid.MostSubdivisions}.",
+                    Text = L10n.F("Between {0} and {1} pixels apart, split into at most {2}.",
+                        LayoutGrid.LeastSpacing, LayoutGrid.MostSpacing, LayoutGrid.MostSubdivisions),
                     TextWrapping = Avalonia.Media.TextWrapping.Wrap,
                 },
                 new StackPanel
@@ -73,7 +73,7 @@ internal sealed class GridSettingsDialog : DialogWindow
         Spacing = 8,
         Children =
         {
-            new TextBlock { Text = label, Width = 130, VerticalAlignment = VerticalAlignment.Center },
+            new TextBlock { Text = L10n.T(label), Width = 130, VerticalAlignment = VerticalAlignment.Center },
             control,
         },
     };

@@ -17,18 +17,19 @@ public static class FillEdits
     /// </summary>
     public static bool Fill(CanvasDocument document, Guid layerID, SKColor colour)
     {
-        if (document.Layers.FirstOrDefault(layer => layer.ID == layerID) is not { IsGroup: false, Asset: { } asset } layer)
+        if (document.Layers.FirstOrDefault(layer => layer.ID == layerID) is not { IsGroup: false } layer)
         {
             return false;
         }
-        var width = asset.Width;
-        var height = asset.Height;
-        if (width <= 0 || height <= 0) return false;
+        if (document.Selection.IsEmpty || !PixelSize(layer, out var width, out var height)) return false;
+        var asset = layer.Asset;
         using var coverage = Coverage(document, out var region);
         var toDocument = BrushEdits.PixelToDocument(layer.Transform, width, height);
         var painted = new SKBitmap(Bitmaps.ColorInfo(width, height));
-        using (var canvas = new SKCanvas(painted))
+        painted.Erase(SKColors.Transparent);
+        if (asset is not null)
         {
+            using var canvas = new SKCanvas(painted);
             using var paint = new SKPaint { BlendMode = SKBlendMode.Src };
             using var source = SKImage.FromBitmap(asset.Image);
             canvas.DrawImage(source, SKRect.Create(0, 0, width, height),
@@ -52,8 +53,28 @@ public static class FillEdits
             painted.Dispose();
             return false;
         }
-        layer.Asset = ImportedImage.Create(painted, asset.Name);
+        layer.Asset = ImportedImage.Create(painted, asset?.Name ?? layer.Name);
         return true;
+    }
+
+    /// <summary>A blank layer gets a bounded pixel grid on its first fill, just as it does on its first stroke.</summary>
+    internal static bool PixelSize(ImageLayer layer, out int width, out int height)
+    {
+        width = height = 0;
+        if (layer.IsGroup || layer.Adjustment is not null || !layer.Transform.IsValid) return false;
+        if (layer.Asset is { } asset)
+        {
+            width = asset.Width;
+            height = asset.Height;
+        }
+        else
+        {
+            if (layer.Transform.Width > DocumentLimits.MaxSide || layer.Transform.Height > DocumentLimits.MaxSide) return false;
+            width = Math.Max(1, (int)Math.Round(layer.Transform.Width));
+            height = Math.Max(1, (int)Math.Round(layer.Transform.Height));
+        }
+        return width is > 0 and <= DocumentLimits.MaxSide && height is > 0 and <= DocumentLimits.MaxSide
+            && (long)width * height <= DocumentLimits.MaxSurfacePixels;
     }
 
     /// <summary>
@@ -69,7 +90,7 @@ public static class FillEdits
         }
         var width = asset.Width;
         var height = asset.Height;
-        if (width <= 0 || height <= 0) return false;
+        if (width <= 0 || height <= 0 || document.Selection.IsEmpty) return false;
         using var coverage = Coverage(document, out var region);
         var toDocument = BrushEdits.PixelToDocument(layer.Transform, width, height);
         var painted = new SKBitmap(Bitmaps.ColorInfo(width, height));
@@ -113,7 +134,17 @@ public static class FillEdits
         if (document.Layers.FirstOrDefault(layer => layer.ID == layerID) is not { Mask: { } mask } layer) return false;
         var width = mask.Asset.Width;
         var height = mask.Asset.Height;
-        if (width <= 0 || height <= 0) return false;
+        if (width <= 0 || height <= 0 || document.Selection.IsEmpty) return false;
+        // A partial fill needs separate mask pixels; changing its single uniform value hides the whole layer.
+        if (width == 1 && height == 1 && document.Selection.Path is not null)
+        {
+            var placement = layer.MaskTransform;
+            if (!placement.IsValid || placement.Width > DocumentLimits.MaxSide || placement.Height > DocumentLimits.MaxSide)
+                return false;
+            width = Math.Max(1, (int)Math.Round(placement.Width));
+            height = Math.Max(1, (int)Math.Round(placement.Height));
+        }
+        if ((long)width * height > DocumentLimits.MaxSurfacePixels) return false;
         using var coverage = Coverage(document, out var region);
         var toDocument = BrushEdits.PixelToDocument(layer.MaskTransform, width, height);
         var painted = Bitmaps.Allocate(Bitmaps.MaskInfo(width, height));
@@ -155,13 +186,22 @@ public static class FillEdits
         region = SKRectI.Create(0, 0, 0, 0);
         if (document.Selection.Path is null) return null;
         region = document.Selection.CoverageRect(document.Width, document.Height);
+        // A failed coverage allocation must never mean unrestricted editing.
+        if (region.Width <= 0 || region.Height <= 0
+            || region.Width > DocumentLimits.MaxSide || region.Height > DocumentLimits.MaxSide
+            || (long)region.Width * region.Height > DocumentLimits.MaxSurfacePixels)
+        {
+            region = SKRectI.Empty;
+            return new SKBitmap();
+        }
         try
         {
             return document.Selection.Coverage(region);
         }
         catch (InvalidOperationException)
         {
-            return null;
+            region = SKRectI.Empty;
+            return new SKBitmap();
         }
     }
 

@@ -1,0 +1,5 @@
+{
+  "Could not close the project: {0}": "无法关闭工程：{0}",
+  "The existing destination is not a readable Compositor project or is a link. Save to a new folder to keep its contents safe.": "目标位置不是可读取的 Compositor 工程，或属于链接。请另存到新的文件夹，以保留原有内容。",
+  "The destination contains files or folders outside the Compositor project. Move those items elsewhere or save to a new folder.": "目标工程内含有额外的文件或文件夹。请先将这些内容移到其他位置，或另存到新的文件夹。"
+}

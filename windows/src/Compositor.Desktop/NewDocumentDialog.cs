@@ -12,25 +12,25 @@ namespace Compositor.Desktop;
 internal sealed class NewDocumentDialog : DialogWindow
 {
     /// <summary>A size worth starting from, as the Mac build's presets menu lists them.</summary>
-    private static readonly (string Title, int Width, int Height)[] Presets =
+    private static readonly (string Title, int Width, int Height, int Resolution)[] Presets =
     [
-        ("Custom", 0, 0),
-        ("4K", 3840, 2160),
-        ("1440p", 2560, 1440),
-        ("1080p", 1920, 1080),
-        ("Instagram square", 1080, 1080),
-        ("Instagram portrait", 1080, 1350),
-        ("Instagram story", 1080, 1920),
-        ("YouTube thumbnail", 1080, 608),
-        ("A4 at 300 per inch", 2480, 3508),
-        ("A3 at 300 per inch", 3508, 4961),
+        ("Custom", 0, 0, 72),
+        ("4K", 3840, 2160, 72),
+        ("1440p", 2560, 1440, 72),
+        ("1080p", 1920, 1080, 72),
+        ("Instagram square", 1080, 1080, 72),
+        ("Instagram portrait", 1080, 1350, 72),
+        ("Instagram story", 1080, 1920, 72),
+        ("YouTube thumbnail", 1080, 608, 72),
+        ("A4 at 300 per inch", 2480, 3508, 300),
+        ("A3 at 300 per inch", 3508, 4961, 300),
     ];
 
     private readonly TextBox _width = new() { Text = "1920", Width = 100 };
     private readonly TextBox _height = new() { Text = "1080", Width = 100 };
     private readonly TextBox _resolution = new() { Text = "72", Width = 100 };
     private readonly ComboBox _preset = new() { Width = 200 };
-    private readonly TextBlock _size = new() { Margin = new Thickness(0, 4, 0, 0) };
+    private readonly TextBlock _size = new() { Margin = new Thickness(0, 4, 0, 0), TextWrapping = Avalonia.Media.TextWrapping.Wrap };
     private bool _choosing;
     private (int Width, int Height, double Resolution)? _result;
 
@@ -47,12 +47,12 @@ internal sealed class NewDocumentDialog : DialogWindow
 
     internal NewDocumentDialog()
     {
-        Title = "New Project";
+        Title = L10n.T("New Project");
         Width = 400;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        _preset.ItemsSource = Presets.Select(preset => preset.Title).ToList();
+        _preset.ItemsSource = Presets.Select(preset => L10n.T(preset.Title)).ToList();
         _preset.SelectedIndex = 0;
         _preset.SelectionChanged += (_, _) => ChoosePreset();
         _width.PropertyChanged += (_, change) =>
@@ -64,8 +64,8 @@ internal sealed class NewDocumentDialog : DialogWindow
             if (change.Property == TextBox.TextProperty) ShowSize();
         };
 
-        var ok = new Button { Content = "OK", IsDefault = true };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
+        var ok = new Button { Content = L10n.T("OK"), IsDefault = true };
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
         ok.Click += (_, _) => Accept();
         cancel.Click += (_, _) => Close();
         Content = new StackPanel
@@ -103,7 +103,7 @@ internal sealed class NewDocumentDialog : DialogWindow
         Spacing = 8,
         Children =
         {
-            new TextBlock { Text = label, Width = 140, VerticalAlignment = VerticalAlignment.Center },
+            new TextBlock { Text = L10n.T(label), Width = 140, VerticalAlignment = VerticalAlignment.Center },
             control,
         },
     };
@@ -112,12 +112,13 @@ internal sealed class NewDocumentDialog : DialogWindow
     private void ChoosePreset()
     {
         if (_choosing || _preset.SelectedIndex <= 0) return;
-        var (_, width, height) = Presets[_preset.SelectedIndex];
+        var (_, width, height, resolution) = Presets[_preset.SelectedIndex];
         _choosing = true;
         try
         {
             _width.Text = width.ToString();
             _height.Text = height.ToString();
+            _resolution.Text = resolution.ToString();
         }
         finally
         {
@@ -133,20 +134,20 @@ internal sealed class NewDocumentDialog : DialogWindow
         if (!int.TryParse(_width.Text, out var width) || !int.TryParse(_height.Text, out var height)
             || width < 1 || height < 1)
         {
-            _size.Text = "A canvas is at least one pixel each way";
+            _size.Text = L10n.T("A canvas is at least one pixel each way");
             return;
         }
         if (width > DocumentLimits.MaxSide || height > DocumentLimits.MaxSide)
         {
-            _size.Text = $"A side is at most {DocumentLimits.MaxSide} pixels";
+            _size.Text = L10n.F("A side is at most {0} pixels", DocumentLimits.MaxSide);
             return;
         }
         var megapixels = width * (double)height / 1_000_000;
         var megabytes = width * (long)height * 4 / 1024.0 / 1024.0;
-        _size.Text = $"{megapixels:0.#} megapixels, about {megabytes:0} MB while it is open";
+        _size.Text = L10n.F("{0:0.#} megapixels, about {1:0} MB while it is open", megapixels, megabytes);
         if ((long)width * height > DocumentLimits.MaxSurfacePixels)
         {
-            _size.Text += $" — too big to hold (the most is {DocumentLimits.MaxSurfaceMegapixels} megapixels)";
+            _size.Text += L10n.F("; too big to hold (the most is {0} megapixels)", DocumentLimits.MaxSurfaceMegapixels);
         }
     }
 

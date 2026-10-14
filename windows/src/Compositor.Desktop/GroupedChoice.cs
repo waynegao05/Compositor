@@ -43,7 +43,7 @@ internal static class GroupedChoice
             }
             foreach (var choice in group)
             {
-                box.Items.Add(new ComboBoxItem { Content = label(choice) });
+                box.Items.Add(new ComboBoxItem { Content = L10n.T(label(choice)) });
                 rows.Add(choice);
             }
         }

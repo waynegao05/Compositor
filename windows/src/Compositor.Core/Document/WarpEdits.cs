@@ -33,7 +33,7 @@ public static class WarpEdits
         BrushSettings settings)
     {
         if (document.Layers.FirstOrDefault(layer => layer.ID == layerID) is not { Asset: { } asset } layer) return false;
-        if (layer.IsGroup || points.Count == 0) return false;
+        if (layer.IsGroup || points.Count == 0 || document.Selection.IsEmpty) return false;
         if (!(settings.Diameter >= 2) || settings.Opacity <= 0) return false;
         var width = document.Width;
         var height = document.Height;
@@ -56,7 +56,8 @@ public static class WarpEdits
             var stroke = new Stroke(work, mode, settings);
             foreach (var point in points) stroke.Append(point);
             if (stroke.Dabs.Count == 0) return false;
-            return StrokeInto(layer, work, stroke, asset);
+            using var coverage = FillEdits.Coverage(document, out var region);
+            return StrokeInto(layer, work, stroke, asset, coverage, region);
         }
     }
 
@@ -65,7 +66,8 @@ public static class WarpEdits
     /// the stroke left where that pixel was on the document. What the brush did not reach is untouched, and a
     /// pixel whose place on the document is off the canvas keeps what it had rather than falling to nothing.
     /// </summary>
-    private static bool StrokeInto(ImageLayer layer, SKBitmap work, Stroke stroke, ImportedImage asset)
+    private static bool StrokeInto(ImageLayer layer, SKBitmap work, Stroke stroke, ImportedImage asset,
+        SKBitmap? coverage, SKRectI region)
     {
         var width = asset.Width;
         var height = asset.Height;
@@ -89,17 +91,24 @@ public static class WarpEdits
             {
                 var at = toDocument.MapPoint(x + 0.5f, y + 0.5f);
                 if (!stroke.Covered(at, radius)) continue;
+                var amount = FillEdits.Amount(coverage, region, at);
+                if (amount <= 0) continue;
                 var sx = (int)Math.Floor(at.X);
                 var sy = (int)Math.Floor(at.Y);
                 if (sx < 0 || sy < 0 || sx >= work.Width || sy >= work.Height) continue;
                 var from = sy * stride + sx * 4;
                 var to = y * painted.RowBytes + x * 4;
-                var alpha = source2[from + 3];
-                target[to + 3] = alpha;
-                // The document holds premultiplied pixels and a layer straight ones.
-                target[to] = Straight(source2[from], alpha);
-                target[to + 1] = Straight(source2[from + 1], alpha);
-                target[to + 2] = Straight(source2[from + 2], alpha);
+                var originalAlpha = target[to + 3];
+                var alpha = originalAlpha * (1 - amount) + source2[from + 3] * amount;
+                // Feather in premultiplied space, then store straight color again.
+                for (var channel = 0; channel < 3; channel++)
+                {
+                    var premultiplied = target[to + channel] * originalAlpha / 255.0 * (1 - amount)
+                        + source2[from + channel] * amount;
+                    target[to + channel] = alpha <= 0 ? (byte)0
+                        : (byte)Math.Clamp(Math.Round(premultiplied * 255 / alpha), 0, 255);
+                }
+                target[to + 3] = (byte)Math.Clamp(Math.Round(alpha), 0, 255);
                 covered++;
             }
         }
@@ -111,9 +120,6 @@ public static class WarpEdits
         layer.Asset = ImportedImage.Create(painted, asset.Name);
         return true;
     }
-
-    private static byte Straight(byte premultiplied, byte alpha) =>
-        alpha == 0 ? (byte)0 : (byte)Math.Min(255, Math.Round(premultiplied * 255.0 / alpha));
 
     /// <summary>
     /// A stroke being pushed through the pixels, dab by dab. Dabs sit close together along the path, as the

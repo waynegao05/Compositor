@@ -22,9 +22,7 @@ internal sealed class ShortcutDialog : DialogWindow
 {
     /// <summary>The table being edited, every row on a key, which is what the check runs on.</summary>
     private readonly Dictionary<string, ShortcutChord> _draft;
-    /// <summary>The table the sheet opened with, which Restore Defaults puts back.</summary>
-    private readonly Dictionary<string, ShortcutChord> _opened;
-    private readonly TextBox _search = new() { PlaceholderText = "Search shortcuts", Width = 400 };
+    private readonly TextBox _search = new() { PlaceholderText = L10n.T("Search shortcuts"), Width = 400 };
     private readonly StackPanel _list = new() { Spacing = 2 };
     /// <summary>What scrolls the list, kept so that the check can take the list out of it to be drawn.</summary>
     private readonly ScrollViewer _scroller = new() { Margin = new Thickness(0, 6, 0, 6) };
@@ -34,30 +32,29 @@ internal sealed class ShortcutDialog : DialogWindow
         TextWrapping = TextWrapping.Wrap,
         IsVisible = false,
     };
-    private readonly Button _save = new() { Content = "Save", IsDefault = true };
+    private readonly Button _save = new() { Content = L10n.T("Save"), IsDefault = true };
+    private readonly Button _restore = new() { Content = L10n.T("Restore Defaults"), HorizontalAlignment = HorizontalAlignment.Left };
     /// <summary>The row being recorded, or null when the keys are the sheet's own again.</summary>
     private string? _recording;
     private Dictionary<string, ShortcutChord>? _result;
 
     internal ShortcutDialog(IReadOnlyDictionary<string, ShortcutChord> overrides)
     {
-        Title = "Keyboard Shortcuts";
+        Title = L10n.T("Keyboard Shortcuts");
         Width = 660;
         Height = 560;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         _draft = Shortcuts.Effective(overrides);
-        _opened = new Dictionary<string, ShortcutChord>(_draft);
         _search.TextChanged += (_, _) => ShowRows();
 
-        var restore = new Button { Content = "Restore Defaults", HorizontalAlignment = HorizontalAlignment.Left };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
-        restore.Click += (_, _) => RestoreDefaults();
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
+        _restore.Click += (_, _) => RestoreDefaults();
         cancel.Click += (_, _) => Close();
         _save.Click += (_, _) => Keep();
 
         var bottom = new DockPanel();
-        bottom.Children.Add(restore);
-        DockPanel.SetDock(restore, Dock.Left);
+        bottom.Children.Add(_restore);
+        DockPanel.SetDock(_restore, Dock.Left);
         bottom.Children.Add(new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -73,8 +70,7 @@ internal sealed class ShortcutDialog : DialogWindow
             {
                 new TextBlock
                 {
-                    Text = "Click a key, then press the one you want. Backspace clears a row and Escape stops "
-                        + "recording; the changes apply when you save.",
+                    Text = L10n.T("Click a key, then press the one you want. Backspace clears a row and Escape stops recording; the changes apply when you save."),
                     TextWrapping = TextWrapping.Wrap,
                 },
                 _search,
@@ -106,12 +102,14 @@ internal sealed class ShortcutDialog : DialogWindow
         {
             var rows = Shortcuts.Definitions
                 .Where(row => row.Group == group)
-                .Where(row => search.Length == 0 || row.Title.Contains(search, StringComparison.OrdinalIgnoreCase))
+                .Where(row => search.Length == 0
+                    || row.Title.Contains(search, StringComparison.OrdinalIgnoreCase)
+                    || L10n.T(row.Title).Contains(search, StringComparison.OrdinalIgnoreCase))
                 .ToList();
             if (rows.Count == 0) continue;
             _list.Children.Add(new TextBlock
             {
-                Text = group,
+                Text = L10n.T(group),
                 FontWeight = FontWeight.SemiBold,
                 Margin = new Thickness(0, 10, 0, 4),
             });
@@ -126,7 +124,7 @@ internal sealed class ShortcutDialog : DialogWindow
         var chord = _draft[definition.ID];
         var button = new Button
         {
-            Content = _recording == definition.ID ? "Press keys…" : chord.IsBound ? chord.Label : "—",
+            Content = _recording == definition.ID ? L10n.T("Press keys…") : chord.IsBound ? chord.Label : "—",
             Width = 150,
             HorizontalContentAlignment = HorizontalAlignment.Center,
         };
@@ -135,7 +133,7 @@ internal sealed class ShortcutDialog : DialogWindow
             _recording = definition.ID;
             ShowRows();
         };
-        var name = new TextBlock { Text = definition.Title, VerticalAlignment = VerticalAlignment.Center };
+        var name = new TextBlock { Text = L10n.T(definition.Title), VerticalAlignment = VerticalAlignment.Center };
         Grid.SetColumn(button, 1);
         return new Grid
         {
@@ -168,7 +166,7 @@ internal sealed class ShortcutDialog : DialogWindow
         if (ShortcutKeys.Bare(e.Key)) return;
         if (e.KeyModifiers.HasFlag(KeyModifiers.Meta))
         {
-            _complaint.Text = "The Windows key is reserved by Windows";
+            _complaint.Text = L10n.T("The Windows key is reserved by Windows");
             _complaint.IsVisible = true;
             return;
         }
@@ -186,7 +184,7 @@ internal sealed class ShortcutDialog : DialogWindow
     {
         _recording = null;
         _draft.Clear();
-        foreach (var row in _opened) _draft[row.Key] = row.Value;
+        foreach (var definition in Shortcuts.Definitions) _draft[definition.ID] = definition.Original;
         ShowRows();
     }
 
@@ -194,7 +192,7 @@ internal sealed class ShortcutDialog : DialogWindow
     private void Complaint()
     {
         var problem = Shortcuts.Problem(_draft);
-        _complaint.Text = problem ?? "";
+        _complaint.Text = ShortcutKeys.ProblemText(problem) ?? "";
         _complaint.IsVisible = problem is not null;
         _save.IsEnabled = _recording is null && problem is null;
     }
@@ -255,6 +253,33 @@ internal sealed class ShortcutDialog : DialogWindow
 
     /// <summary>The rows that have moved, which Save would keep, for the check.</summary>
     internal Dictionary<string, ShortcutChord> Changes() => Moved();
+
+    /// <summary>A saved rebind and an unbound row both return to the shipped table through the real button.</summary>
+    internal static string RestoreDefaultsSelfCheck()
+    {
+        var undo = $"{Shortcuts.Menus}:Undo";
+        var copy = $"{Shortcuts.Menus}:Copy";
+        var overrides = new Dictionary<string, ShortcutChord>
+        {
+            [undo] = new("Y", ShortcutModifiers.Control),
+            [copy] = ShortcutChord.Unbound,
+        };
+        var dialog = new ShortcutDialog(overrides);
+        try
+        {
+            if (dialog.Draft[undo] != overrides[undo] || dialog.Draft[copy].IsBound)
+                throw new InvalidOperationException("The shortcut restore fixture did not load its saved overrides.");
+            dialog._recording = undo;
+            dialog._restore.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (dialog._recording is not null || !dialog.CanSave || dialog.Changes().Count != 0
+                || Shortcuts.Definitions.Any(definition => dialog.Draft[definition.ID] != definition.Original))
+                throw new InvalidOperationException("Restore Defaults kept a custom shortcut or an unbound row.");
+            if (dialog._result is not null || overrides[undo].Key != "Y" || overrides[copy].IsBound)
+                throw new InvalidOperationException("Restore Defaults saved changes before the user chose Save.");
+            return "shortcut defaults: saved custom bindings and unbound rows restored; recording stopped; changes remain unsaved";
+        }
+        finally { dialog.Close(); }
+    }
 
     /// <summary>
     /// Records a key on a row the way pressing it would, so that the check drives the path a person drives

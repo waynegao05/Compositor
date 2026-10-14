@@ -33,7 +33,7 @@ public static class GradientEdits
     public static bool Fill(CanvasDocument document, Guid layerID, bool mask, SKPoint start, SKPoint end,
         SKColor from, SKColor to, double opacity, GradientShape shape)
     {
-        if (opacity <= 0 || !HasLine(start, end)) return false;
+        if (opacity <= 0 || !HasLine(start, end) || document.Selection.IsEmpty) return false;
         if (document.Layers.FirstOrDefault(layer => layer.ID == layerID) is not { } layer) return false;
 
         SKBitmap pixels;
@@ -55,10 +55,12 @@ public static class GradientEdits
         }
         else
         {
-            if (layer.Asset is not { } asset || asset.Width <= 0 || asset.Height <= 0) return false;
-            pixels = new SKBitmap(Bitmaps.ColorInfo(asset.Width, asset.Height));
-            using (var canvas = new SKCanvas(pixels))
+            if (!FillEdits.PixelSize(layer, out var width, out var height)) return false;
+            pixels = new SKBitmap(Bitmaps.ColorInfo(width, height));
+            pixels.Erase(SKColors.Transparent);
+            if (layer.Asset is { } asset)
             {
+                using var canvas = new SKCanvas(pixels);
                 using var paint = new SKPaint { BlendMode = SKBlendMode.Src };
                 using var source = SKImage.FromBitmap(asset.Image);
                 canvas.DrawImage(source, SKRect.Create(0, 0, asset.Width, asset.Height),
@@ -89,10 +91,14 @@ public static class GradientEdits
         using (var _ = clip)
         {
             var span = clip is null ? default : clip.GetPixelSpan();
-            Paint(pixels, start, end, from, to, opacity, shape, toDocument, span, clip?.RowBytes ?? 0, region);
+            if (!Paint(pixels, start, end, from, to, opacity, shape, toDocument, span, clip?.RowBytes ?? 0, region))
+            {
+                pixels.Dispose();
+                return false;
+            }
         }
         if (mask) layer.Mask = layer.Mask!.Replacing(ImportedImage.Create(pixels, layer.Mask.Asset.Name));
-        else layer.Asset = ImportedImage.Create(pixels, layer.Asset!.Name);
+        else layer.Asset = ImportedImage.Create(pixels, layer.Asset?.Name ?? layer.Name);
         return true;
     }
 
@@ -123,12 +129,13 @@ public static class GradientEdits
             Channel(from.Alpha, to.Alpha));
     }
 
-    private static void Paint(SKBitmap pixels, SKPoint start, SKPoint end, SKColor from, SKColor to,
+    private static bool Paint(SKBitmap pixels, SKPoint start, SKPoint end, SKColor from, SKColor to,
         double opacity, GradientShape shape, SKMatrix toDocument, ReadOnlySpan<byte> clip, int clipStride,
         SKRectI region)
     {
         var grayscale = pixels.ColorType == SKColorType.Gray8;
         var span = pixels.GetPixelSpan();
+        var touched = false;
         for (var y = 0; y < pixels.Height; y++)
         {
             for (var x = 0; x < pixels.Width; x++)
@@ -146,6 +153,7 @@ public static class GradientEdits
                 var colour = Blend(from, to, Parameter(start, end, at, shape));
                 var alpha = colour.Alpha / 255.0 * coverage;
                 if (alpha <= 0) continue;
+                touched = true;
                 if (grayscale)
                 {
                     // A mask holds one channel, and the gradient's own alpha fades it towards what was there.
@@ -171,5 +179,6 @@ public static class GradientEdits
                 span[offset + 3] = (byte)Math.Round(outAlpha * 255);
             }
         }
+        return touched;
     }
 }

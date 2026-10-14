@@ -80,6 +80,7 @@ public static class CanvasEdits
             document.Layers.Insert(0, Extension(width, height, dx, dy, oldWidth, oldHeight, extension));
         }
 
+        document.Selection = document.Selection.Translated(dx, dy);
         document.Width = width;
         document.Height = height;
         return true;

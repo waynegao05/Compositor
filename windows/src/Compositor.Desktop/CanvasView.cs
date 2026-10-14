@@ -63,6 +63,7 @@ public sealed class CanvasView : Control
     private SKPoint _origin;
     private double _zoom = 1;
     private Point? _dragging;
+    private IPointer? _interactionPointer;
     private Guid? _guideDrag;
     private SKPoint[]? _distortCorners;
     private int _distortHandle;
@@ -253,7 +254,29 @@ public sealed class CanvasView : Control
     public bool TextEditing { get; private set; }
 
     /// <summary>The caret to draw, in document pixels, while text is being typed.</summary>
-    public SKRect? TextCaret { get; set; }
+    public SKRect? TextCaret
+    {
+        get => _textCaret;
+        set
+        {
+            _textCaret = value;
+            _textInput.CursorMoved();
+            InvalidateVisual();
+        }
+    }
+
+    private SKRect? _textCaret;
+    internal (SKPoint From, SKPoint To)? TextCaretLine { get; set; }
+    private readonly CanvasTextInputClient _textInput;
+
+    /// <summary>Uncommitted input belongs to the input method, including its navigation keys.</summary>
+    public bool TextComposing => TextEditing && _textInput.IsComposing;
+
+    /// <summary>The document caret in view coordinates; Avalonia applies the window's DPI scaling.</summary>
+    internal Rect TextCursorRectangle => TextCaret is { } caret
+        ? new Rect(ToScreen(new SKPoint(caret.Left, caret.Top)),
+            new Size(Math.Max(1, caret.Width * _zoom), Math.Max(1, caret.Height * _zoom)))
+        : new Rect(0, 0, 1, 16);
 
     /// <summary>Text that was typed, a newline included.</summary>
     public Action<string>? TextTyped { get; set; }
@@ -349,9 +372,18 @@ public sealed class CanvasView : Control
 
     public CanvasView()
     {
+        _textInput = new CanvasTextInputClient(this);
         ClipToBounds = true;
         // The canvas takes the keys while text is being typed, as the Mac build's canvas does.
         Focusable = true;
+        InputMethod.SetIsInputMethodEnabled(this, false);
+        AddHandler(TextInputMethodClientRequestedEvent, (_, e) =>
+        {
+            if (!TextEditing) return;
+            e.Client = _textInput;
+            e.Handled = true;
+        });
+        LostFocus += (_, _) => _textInput.Clear();
         _caretBlink.Tick += (_, _) =>
         {
             _caretOn = !_caretOn;
@@ -363,6 +395,7 @@ public sealed class CanvasView : Control
     public void BeginText()
     {
         TextEditing = true;
+        InputMethod.SetIsInputMethodEnabled(this, true);
         _caretOn = true;
         _caretBlink.Start();
         Focus();
@@ -373,6 +406,9 @@ public sealed class CanvasView : Control
     public void EndText()
     {
         TextEditing = false;
+        InputMethod.SetIsInputMethodEnabled(this, false);
+        _textInput.Clear();
+        TextCaretLine = null;
         TextCaret = null;
         _caretBlink.Stop();
         InvalidateVisual();
@@ -382,6 +418,8 @@ public sealed class CanvasView : Control
     {
         if (TextEditing && e.Text is { Length: > 0 } typed)
         {
+            // A preedit is only a preview. The committed TextInput event inserts it exactly once.
+            _textInput.Clear();
             // Whatever the keyboard layout or the input method produced, as it produced it.
             TextTyped?.Invoke(typed);
             e.Handled = true;
@@ -394,6 +432,13 @@ public sealed class CanvasView : Control
     {
         if (TextEditing)
         {
+            // Windows processes these keys before routing them here. Do not also cancel the text layer,
+            // insert a newline, or move its caret while the IME is choosing a candidate.
+            if (TextComposing || e.Key == Key.ImeProcessed)
+            {
+                e.Handled = true;
+                return;
+            }
             switch (e.Key)
             {
                 case Key.Escape:
@@ -543,6 +588,7 @@ public sealed class CanvasView : Control
     /// <summary>The view has moved or changed zoom: it is redrawn, and whatever follows it is told.</summary>
     private void Moved()
     {
+        _textInput.CursorMoved();
         InvalidateVisual();
         ViewportChanged?.Invoke();
     }
@@ -743,9 +789,15 @@ public sealed class CanvasView : Control
     /// <summary>The caret, drawn over everything else while text is being typed.</summary>
     private void DrawCaret(DrawingContext context)
     {
-        if (!TextEditing || !_caretOn || TextCaret is not { } caret) return;
-        var top = ToScreen(new SKPoint(caret.Left, caret.Top));
-        var bottom = ToScreen(new SKPoint(caret.Right, caret.Bottom));
+        if (!TextEditing) return;
+        if (TextComposing)
+        {
+            _textInput.Draw(context);
+            return;
+        }
+        if (!_caretOn || TextCaret is not { } caret) return;
+        var top = ToScreen(TextCaretLine?.From ?? new SKPoint(caret.Left, caret.Top));
+        var bottom = ToScreen(TextCaretLine?.To ?? new SKPoint(caret.Right, caret.Bottom));
         context.DrawLine(CaretPen, top, bottom);
     }
 
@@ -1244,7 +1296,7 @@ public sealed class CanvasView : Control
         {
             var at = ToDocument(e.GetPosition(this));
             _uprightDraft = (at, at);
-            e.Pointer.Capture(this);
+            CaptureInteraction(e.Pointer);
             e.Handled = true;
             InvalidateVisual();
             return;
@@ -1260,7 +1312,7 @@ public sealed class CanvasView : Control
             _sampleOriginal = new SKColor((byte)Math.Round(Brush.Red * 255), (byte)Math.Round(Brush.Green * 255),
                 (byte)Math.Round(Brush.Blue * 255));
             Sample();
-            e.Pointer.Capture(this);
+            CaptureInteraction(e.Pointer);
             e.Handled = true;
             EyedropperClicked?.Invoke(ToDocument(_sampleAt), e.KeyModifiers);
             return;
@@ -1270,7 +1322,7 @@ public sealed class CanvasView : Control
         {
             _guideDrag = guide;
             GuideDragStarted?.Invoke();
-            e.Pointer.Capture(this);
+            CaptureInteraction(e.Pointer);
             e.Handled = true;
             InvalidateVisual();
             return;
@@ -1279,7 +1331,7 @@ public sealed class CanvasView : Control
             && TransformHandles && TransformBox is { } box
             && beginTransformDrag(box, ToDocument(e.GetPosition(this)), e.KeyModifiers))
         {
-            e.Pointer.Capture(this);
+            CaptureInteraction(e.Pointer);
             e.Handled = true;
             return;
         }
@@ -1309,7 +1361,7 @@ public sealed class CanvasView : Control
             {
                 _cropDragging = CropDrag.Create;
             }
-            e.Pointer.Capture(this);
+            CaptureInteraction(e.Pointer);
             e.Handled = true;
             return;
         }
@@ -1319,7 +1371,7 @@ public sealed class CanvasView : Control
             GradientStarted?.Invoke();
             _gradientStart = ToDocument(e.GetPosition(this));
             _gradientEnd = _gradientStart;
-            e.Pointer.Capture(this);
+            CaptureInteraction(e.Pointer);
             e.Handled = true;
             return;
         }
@@ -1331,7 +1383,7 @@ public sealed class CanvasView : Control
             _shapeAnchor = new SKPoint(MathF.Round(point.X), MathF.Round(point.Y));
             _shapeBox = SKRectI.Create((int)_shapeAnchor.X, (int)_shapeAnchor.Y, 1, 1);
             _shapeEnd = _shapeAnchor;
-            e.Pointer.Capture(this);
+            CaptureInteraction(e.Pointer);
             e.Handled = true;
             return;
         }
@@ -1353,7 +1405,7 @@ public sealed class CanvasView : Control
             _painting = true;
             _stroke.Clear();
             _stroke.Add(ToDocument(e.GetPosition(this)));
-            e.Pointer.Capture(this);
+            CaptureInteraction(e.Pointer);
             InvalidateVisual();
             e.Handled = true;
             return;
@@ -1366,7 +1418,7 @@ public sealed class CanvasView : Control
             if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && PixelsGrabbed?.Invoke(point) == true)
             {
                 _pixelsFrom = point;
-                e.Pointer.Capture(this);
+                CaptureInteraction(e.Pointer);
                 e.Handled = true;
                 return;
             }
@@ -1396,12 +1448,12 @@ public sealed class CanvasView : Control
             _lasso.Clear();
             _lasso.Add(point);
             _lassoPointer = point;
-            e.Pointer.Capture(this);
+            CaptureInteraction(e.Pointer);
             e.Handled = true;
             return;
         }
         _dragging = e.GetPosition(this);
-        e.Pointer.Capture(this);
+        CaptureInteraction(e.Pointer);
         base.OnPointerPressed(e);
     }
 
@@ -1429,6 +1481,12 @@ public sealed class CanvasView : Control
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         var now = e.GetPosition(this);
+        var buttons = e.GetCurrentPoint(this).Properties;
+        if (HasCapturedInteraction && !buttons.IsLeftButtonPressed
+            && (_dragging is null || (!buttons.IsMiddleButtonPressed && !buttons.IsRightButtonPressed)))
+        {
+            FinishCapturedInteraction();
+        }
         // Every move is reported, whatever the drag in hand is, so a readout that follows the pointer does not
         // stop while a stroke is being painted.
         PointerMovedAt?.Invoke(ToDocument(now));
@@ -1569,120 +1627,98 @@ public sealed class CanvasView : Control
         base.OnPointerMoved(e);
     }
 
+    /// <summary>Whether an unfinished gesture still belongs to the current document.</summary>
+    public bool HasPendingInteraction => HasCapturedInteraction || _lasso.Count > 0;
+
+    private bool HasCapturedInteraction => _pixelsFrom is not null || _sampling || _uprightDraft is not null
+        || _distortCorners is not null || _guideDrag is not null || _painting || _gradientDrag || _shaping
+        || _cropDragging is not CropDrag.None || _transformDragging || _selecting || _dragging is not null;
+
+    private void CaptureInteraction(IPointer pointer)
+    {
+        _interactionPointer = pointer;
+        pointer.Capture(this);
+    }
+
+    /// <summary>Commits the gesture before saving, switching tools or changing documents.</summary>
+    public void FinishInteraction()
+    {
+        FinishCapturedInteraction();
+        if (_lasso.Count > 0)
+        {
+            if (_lasso.Count >= 3) CompleteSelection();
+            else ClearDraft();
+            InvalidateVisual();
+        }
+    }
+
+    private void FinishCapturedInteraction()
+    {
+        if (!HasCapturedInteraction) return;
+        var pixels = _pixelsFrom is not null;
+        var upright = _uprightDraft;
+        var distort = _distortCorners;
+        var guide = _guideDrag is not null;
+        var stroke = _painting ? _stroke.ToArray() : [];
+        var gradient = _gradientDrag;
+        var gradientStart = _gradientStart;
+        var gradientEnd = _gradientEnd;
+        var shape = _shaping;
+        var shapeAnchor = _shapeAnchor;
+        var shapeBox = _shapeBox;
+        var shapeEnd = _shapeEnd;
+        var transform = _transformDragging;
+        var selecting = _selecting;
+        var selection = Selection;
+        var selectionBox = _selectionBox;
+        var mode = _draftMode;
+        var lasso = selecting ? _lasso.ToArray() : [];
+        var pointer = _interactionPointer;
+
+        // Clear every flag before releasing capture or calling the owner: either can reenter this method.
+        _interactionPointer = null;
+        _pixelsFrom = null;
+        _sampling = false;
+        _sampleRing = null;
+        _uprightDraft = null;
+        _distortCorners = null;
+        _guideDrag = null;
+        _painting = false;
+        _stroke.Clear();
+        _gradientDrag = false;
+        _shaping = false;
+        _cropDragging = CropDrag.None;
+        _cropHandle = null;
+        _transformDragging = false;
+        _handle = null;
+        _selecting = false;
+        _dragging = null;
+        SnapLines = (null, null);
+        if (selecting) ClearDraft();
+        if (pointer?.Captured == this) pointer.Capture(null);
+        InvalidateVisual();
+
+        if (pixels) PixelsDropped?.Invoke();
+        if (upright is { } drawn) UprightDrawn?.Invoke(drawn.Start, drawn.End);
+        if (distort is not null) DistortFinished?.Invoke(distort);
+        if (guide) GuideDragFinished?.Invoke();
+        if (stroke.Length > 0) StrokeFinished?.Invoke(stroke);
+        if (gradient) GradientFinished?.Invoke(gradientStart, gradientEnd);
+        if (shape) ShapeFinished?.Invoke(shapeAnchor, shapeBox, shapeEnd);
+        if (transform) TransformFinished?.Invoke();
+        if (selecting && selection == SelectionTool.Lasso) LassoFinished?.Invoke(lasso, mode);
+        else if (selecting && selectionBox is { } box) MarqueeFinished?.Invoke(box, mode);
+    }
+
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        FinishCapturedInteraction();
+        base.OnPointerCaptureLost(e);
+    }
+
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
-        if (_pixelsFrom is not null)
-        {
-            _pixelsFrom = null;
-            e.Pointer.Capture(null);
-            PixelsDropped?.Invoke();
-            e.Handled = true;
-            return;
-        }
-        if (_sampling)
-        {
-            _sampling = false;
-            _sampleRing = null;
-            e.Pointer.Capture(null);
-            InvalidateVisual();
-            e.Handled = true;
-            return;
-        }
-        if (_uprightDraft is { } drawn)
-        {
-            _uprightDraft = null;
-            e.Pointer.Capture(null);
-            InvalidateVisual();
-            UprightDrawn?.Invoke(drawn.Start, drawn.End);
-            e.Handled = true;
-            return;
-        }
-        if (_distortCorners is { } shape)
-        {
-            _distortCorners = null;
-            e.Pointer.Capture(null);
-            InvalidateVisual();
-            DistortFinished?.Invoke(shape);
-            e.Handled = true;
-            return;
-        }
-        if (_guideDrag is not null)
-        {
-            _guideDrag = null;
-            e.Pointer.Capture(null);
-            GuideDragFinished?.Invoke();
-            e.Handled = true;
-            return;
-        }
-        if (_painting)
-        {
-            _painting = false;
-            var stroke = _stroke.ToList();
-            _stroke.Clear();
-            InvalidateVisual();
-            if (stroke.Count > 0) StrokeFinished?.Invoke(stroke);
-            e.Pointer.Capture(null);
-            return;
-        }
-        if (_gradientDrag)
-        {
-            _gradientDrag = false;
-            e.Pointer.Capture(null);
-            InvalidateVisual();
-            GradientFinished?.Invoke(_gradientStart, _gradientEnd);
-            return;
-        }
-        if (_shaping)
-        {
-            _shaping = false;
-            e.Pointer.Capture(null);
-            InvalidateVisual();
-            ShapeFinished?.Invoke(_shapeAnchor, _shapeBox, _shapeEnd);
-            return;
-        }
-        if (_cropDragging is not CropDrag.None)
-        {
-            _cropDragging = CropDrag.None;
-            e.Pointer.Capture(null);
-            InvalidateVisual();
-            return;
-        }
-        if (_transformDragging)
-        {
-            _transformDragging = false;
-            _handle = null;
-            SnapLines = (null, null);
-            e.Pointer.Capture(null);
-            InvalidateVisual();
-            TransformFinished?.Invoke();
-            return;
-        }
-        if (_selecting)
-        {
-            _selecting = false;
-            e.Pointer.Capture(null);
-            var mode = _draftMode;
-            if (Selection == SelectionTool.Lasso)
-            {
-                var points = _lasso.ToList();
-                ClearDraft();
-                InvalidateVisual();
-                LassoFinished?.Invoke(points, mode);
-                return;
-            }
-            if (_selectionBox is { } box)
-            {
-                ClearDraft();
-                InvalidateVisual();
-                MarqueeFinished?.Invoke(box, mode);
-                return;
-            }
-            ClearDraft();
-            InvalidateVisual();
-            return;
-        }
-        _dragging = null;
-        e.Pointer.Capture(null);
+        FinishCapturedInteraction();
         base.OnPointerReleased(e);
     }
 

@@ -264,7 +264,7 @@ private struct NewTabDropSlot: View {
 private struct OverflowTabsPill: View {
     let workspace: ProjectWorkspace
     let hiddenIDs: [UUID]
-    private var label: String { projectTabOverflowLabel(for: hiddenIDs.count) }
+    private var label: String { L10n.format(hiddenIDs.count == 1 ? "%@ more tab" : "%@ more tabs", String(hiddenIDs.count)) }
     var body: some View {
         HStack(spacing: 4) {
             Text(label).font(.system(size: 12, weight: .medium))
@@ -364,7 +364,7 @@ private struct ProjectTabButton: View {
         .frame(height: 28)
         .background(targeted ? Color.accentColor.opacity(0.3) : Color.white.opacity(active ? 0.12 : 0.035), in: Capsule())
         .overlay(Capsule().strokeBorder(targeted ? Color.accentColor : Color.white.opacity(active ? 0.22 : 0.08), lineWidth: targeted ? 2 : 1))
-        .help(targeted ? "Add to \(tab.title)" : tab.title)
+        .help(targeted ? L10n.format("Add to %@", tab.title) : tab.title)
         .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier, ProjectWorkspace.layerType], delegate:
             ProjectTabDropDelegate(workspace: workspace, destination: tab.id, targeted: $targeted))
     }
@@ -376,7 +376,7 @@ struct NewProjectDropTarget: ViewModifier {
     func body(content: Content) -> some View {
         content
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(targeted ? Color.accentColor : .clear, lineWidth: 2))
-            .help(targeted ? "Open in a new project tab" : "New canvas (⌘N) · Drop images here for new tabs")
+            .help(L10n.tr(targeted ? "Open in a new project tab" : "New canvas (⌘N) · Drop images here for new tabs"))
             .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier, ProjectWorkspace.layerType], delegate:
                 ProjectTabDropDelegate(workspace: workspace, destination: nil, targeted: $targeted))
     }

@@ -24,7 +24,7 @@ internal sealed class ColorRangePanel : DialogWindow
     private readonly TextBlock _problem = new() { Foreground = Brushes.Orange, TextWrapping = TextWrapping.Wrap };
     private readonly Slider _fuzziness;
     private readonly TextBlock _readout = new() { Width = 44, VerticalAlignment = VerticalAlignment.Center };
-    private readonly CheckBox _invert = new() { Content = "Invert" };
+    private readonly CheckBox _invert = new() { Content = L10n.T("Invert") };
     private bool _showing;
     private bool _done;
 
@@ -40,7 +40,7 @@ internal sealed class ColorRangePanel : DialogWindow
     public ColorRangePanel(ColorRangeSession session)
     {
         _session = session;
-        Title = "Color Range";
+        Title = L10n.T("Color Range");
         Width = 340;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
@@ -49,19 +49,19 @@ internal sealed class ColorRangePanel : DialogWindow
         var modes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         foreach (var mode in Enum.GetValues<ColorRangeSession.Picking>())
         {
-            var button = new Button { Content = mode.ToString() };
+            var button = new Button { Content = L10n.T(mode.ToString()) };
             var picked = mode;
             button.Click += (_, _) =>
             {
                 session.Mode = picked;
                 Lit();
             };
-            ToolTip.SetTip(button, mode switch
+            ToolTip.SetTip(button, L10n.T(mode switch
             {
                 ColorRangeSession.Picking.Replace => "Click the picture to select that color",
                 ColorRangeSession.Picking.Add => "Click the picture to add that color to the selection",
                 _ => "Click the picture to take that color out of the selection",
-            });
+            }));
             _modes[mode] = button;
             modes.Children.Add(button);
         }
@@ -90,8 +90,8 @@ internal sealed class ColorRangePanel : DialogWindow
             Changed?.Invoke();
         };
 
-        var ok = new Button { Content = "OK", IsDefault = true };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
+        var ok = new Button { Content = L10n.T("OK"), IsDefault = true };
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
         ok.Click += (_, _) =>
         {
             _done = true;
@@ -122,7 +122,7 @@ internal sealed class ColorRangePanel : DialogWindow
                     Spacing = 8,
                     Children =
                     {
-                        new TextBlock { Text = "Fuzziness", Width = 70, VerticalAlignment = VerticalAlignment.Center },
+                        new TextBlock { Text = L10n.T("Fuzziness"), Width = 70, VerticalAlignment = VerticalAlignment.Center },
                         _fuzziness,
                         _readout,
                     },
@@ -150,10 +150,9 @@ internal sealed class ColorRangePanel : DialogWindow
         ShowingMask = mask is not null;
         _mask.Show(mask);
         _hint.Text = picked == 0
-            ? "Click the picture to pick the color to select."
-            : "Shift-click adds a color, Option-click takes one away."
-                + $" {picked} color(s) picked, {taken} taken away.";
-        _problem.Text = _session.Problem ?? "";
+            ? L10n.T("Click the picture to pick the color to select.")
+            : L10n.F("Shift-click adds a color, Alt-click takes one away. {0} color(s) picked, {1} taken away.", picked, taken);
+        _problem.Text = L10n.T(_session.Problem ?? "");
         _showing = true;
         try
         {

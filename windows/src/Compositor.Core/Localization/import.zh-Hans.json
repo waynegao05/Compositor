@@ -1,0 +1,6 @@
+{
+  "This project already has the maximum number of layers.": "当前项目已达到图层数量上限。",
+  "Imported Photoshop document {0}: {1} layers, {2} conversion notes. Save as a .comp project.": "已导入 Photoshop 文档 {0}：{1} 个图层，{2} 条转换说明。请另存为 .comp 项目。",
+  "Photoshop import notes": "Photoshop 导入说明",
+  "Some Photoshop features were converted or could not be preserved. Review the imported image before saving.": "部分 Photoshop 功能已转换或无法保留。保存前请检查导入后的图像。"
+}

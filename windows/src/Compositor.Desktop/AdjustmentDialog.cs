@@ -25,6 +25,9 @@ internal sealed class AdjustmentDialog : DialogWindow
     private readonly ComboBox? _levelsChannel;
     private readonly LayerAdjustment _start;
     private LayerAdjustment? _result;
+    private LevelsSettings _levels;
+    private HueSaturationSettings _hsv;
+    private bool _loadingRange;
 
     /// <summary>Asks for the picture to be shown with these settings as they stand.</summary>
     public Action<LayerAdjustment>? Preview { get; set; }
@@ -32,8 +35,10 @@ internal sealed class AdjustmentDialog : DialogWindow
     internal AdjustmentDialog(LayerAdjustment start)
     {
         _start = start;
+        _levels = Levels(start);
+        _hsv = Hsv(start);
         var kind = start.Kind;
-        Title = $"{LayerPlacement.Name(kind)} Adjustment";
+        Title = L10n.F("{0} Adjustment", L10n.T(LayerPlacement.Name(kind)));
         Width = 460;
         Height = 580;
         CanResize = true;
@@ -47,7 +52,7 @@ internal sealed class AdjustmentDialog : DialogWindow
                 var hsv = start.ResolvedHSV;
                 _range = new ComboBox
                 {
-                    ItemsSource = HueBand.Ranges.Select(range => range.ToString()).ToList(),
+                    ItemsSource = HueBand.Ranges.Select(range => L10n.T(range.ToString())).ToList(),
                     SelectedIndex = HueBand.Ranges.IndexOf(hsv.Range),
                 };
                 group.Children.Add(Row("Range", _range));
@@ -55,6 +60,7 @@ internal sealed class AdjustmentDialog : DialogWindow
                 Add(group, "Saturation", -100, 100, hsv.Current.Saturation, 0, (s, v) => s.HsvSettings = Hsv(s, saturation: v));
                 Add(group, "Lightness", -100, 100, hsv.Current.Lightness, 0, (s, v) => s.HsvSettings = Hsv(s, lightness: v));
                 Check(group, "Colorize", hsv.Colorize, (s, v) => s.HsvSettings = Hsv(s, colorize: v));
+                _range.SelectionChanged += (_, _) => ChangeRange();
                 break;
             }
             case AdjustmentKind.Levels:
@@ -62,15 +68,16 @@ internal sealed class AdjustmentDialog : DialogWindow
                 var range = start.Levels.Ranges[(int)start.Levels.Channel];
                 _levelsChannel = new ComboBox
                 {
-                    ItemsSource = new[] { "RGB", "Red", "Green", "Blue" },
+                    ItemsSource = new[] { "RGB", "Red", "Green", "Blue" }.Select(L10n.T).ToArray(),
                     SelectedIndex = (int)start.Levels.Channel,
                 };
                 group.Children.Add(Row("Channel", _levelsChannel));
-                Add(group, "Black point", 0, 254, range.Black, 0, SetLevels);
-                Add(group, "Gamma", 0.1, 9.99, range.Gamma, 1, SetLevels, "0.00");
-                Add(group, "White point", 1, 255, range.White, 255, SetLevels);
-                Add(group, "Output black", 0, 255, range.OutputBlack, 0, SetLevels);
-                Add(group, "Output white", 0, 255, range.OutputWhite, 255, SetLevels);
+                Add(group, "Black point", 0, 254, range.Black, 0, (s, v) => s.Levels.Ranges[(int)s.Levels.Channel].Black = v);
+                Add(group, "Gamma", 0.1, 9.99, range.Gamma, 1, (s, v) => s.Levels.Ranges[(int)s.Levels.Channel].Gamma = v, "0.00");
+                Add(group, "White point", 1, 255, range.White, 255, (s, v) => s.Levels.Ranges[(int)s.Levels.Channel].White = v);
+                Add(group, "Output black", 0, 255, range.OutputBlack, 0, (s, v) => s.Levels.Ranges[(int)s.Levels.Channel].OutputBlack = v);
+                Add(group, "Output white", 0, 255, range.OutputWhite, 255, (s, v) => s.Levels.Ranges[(int)s.Levels.Channel].OutputWhite = v);
+                _levelsChannel.SelectionChanged += (_, _) => ChangeRange();
                 break;
             }
             case AdjustmentKind.Exposure:
@@ -87,7 +94,7 @@ internal sealed class AdjustmentDialog : DialogWindow
             {
                 var channel = new ComboBox
                 {
-                    ItemsSource = new[] { "RGB", "Red", "Green", "Blue" },
+                    ItemsSource = new[] { "RGB", "Red", "Green", "Blue" }.Select(L10n.T).ToArray(),
                     SelectedIndex = Math.Clamp((int)start.Curves.Channel, 0, 3),
                     Width = 120,
                 };
@@ -134,7 +141,7 @@ internal sealed class AdjustmentDialog : DialogWindow
                 Add(group, "Distance, pixels", 1, 2000, start.ResolvedMotionDistance, 10, (s, v) => s.MotionDistance = v, "0");
                 break;
             case AdjustmentKind.Invert:
-                group.Children.Add(new TextBlock { Text = "Invert has no settings: it turns every pixel over." });
+                group.Children.Add(new TextBlock { Text = L10n.T("Invert has no settings: it turns every pixel over.") });
                 break;
             case AdjustmentKind.BlackWhite:
                 Add(group, "Reds", -200, 300, start.BlackWhite.Reds, 40, (s, v) => s.BlackWhiteSettings = Mix(s, reds: v));
@@ -157,13 +164,13 @@ internal sealed class AdjustmentDialog : DialogWindow
                 Add(group, "Highlights: cyan to red", -100, 100, start.ColorBalance.HighlightCyanRed, 0, (s, v) => s.ColorBalanceSettings = Balance(s, highlightCyanRed: v));
                 Add(group, "Highlights: magenta to green", -100, 100, start.ColorBalance.HighlightMagentaGreen, 0, (s, v) => s.ColorBalanceSettings = Balance(s, highlightMagentaGreen: v));
                 Add(group, "Highlights: yellow to blue", -100, 100, start.ColorBalance.HighlightYellowBlue, 0, (s, v) => s.ColorBalanceSettings = Balance(s, highlightYellowBlue: v));
-                Check(group, "Preserve luminosity", start.ColorBalance.PreserveLuminosity, (s, v) => s.ColorBalanceSettings = Balance(s, preserve: v));
+                Check(group, "Preserve luminosity", start.ColorBalance.PreserveLuminosity, (s, v) => s.ColorBalanceSettings = Balance(s, preserve: v), fallback: true);
                 break;
         }
 
-        var ok = new Button { Content = "Apply", IsDefault = true };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
-        var reset = new Button { Content = "Reset" };
+        var ok = new Button { Content = L10n.T("Apply"), IsDefault = true };
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
+        var reset = new Button { Content = L10n.T("Reset") };
         ok.Click += (_, _) => Accept(start);
         cancel.Click += (_, _) => Close();
         reset.Click += (_, _) => Restore(new LayerAdjustment { Kind = kind });
@@ -178,24 +185,54 @@ internal sealed class AdjustmentDialog : DialogWindow
         Content = new ScrollViewer { Content = group };
     }
 
-    private LevelsChannelRange LevelsRange(LayerAdjustment settings) =>
-        settings.Levels.Ranges[(int)(_levelsChannel is { SelectedIndex: >= 0 } box ? (LevelsChannel)box.SelectedIndex : settings.Levels.Channel)];
-
-    private void SetLevels(LayerAdjustment settings, double value)
+    private void StoreRange()
     {
-        if (_levelsChannel is not { SelectedIndex: >= 0 } box) return;
-        var channel = (LevelsChannel)box.SelectedIndex;
-        settings.Levels.Channel = channel;
-        var range = LevelsRange(settings);
-        var updated = new LevelsChannelRange
+        if (_loadingRange) return;
+        if (_start.Kind == AdjustmentKind.Levels && _rows.Count == 5)
         {
-            Black = range.Black,
-            Gamma = range.Gamma,
-            White = range.White,
-            OutputBlack = range.OutputBlack,
-            OutputWhite = range.OutputWhite,
-        };
-        settings.Levels.Ranges[(int)channel] = updated;
+            _levels.Ranges[(int)_levels.Channel] = new LevelsChannelRange
+            {
+                Black = _rows[0].Slider.Value, Gamma = _rows[1].Slider.Value,
+                White = _rows[2].Slider.Value, OutputBlack = _rows[3].Slider.Value,
+                OutputWhite = _rows[4].Slider.Value,
+            };
+        }
+        else if (_start.Kind == AdjustmentKind.HueSaturation && _rows.Count == 3)
+        {
+            _hsv.Set(_rows[0].Slider.Value, _rows[1].Slider.Value, _rows[2].Slider.Value);
+            _hsv.Colorize = _boxes[0].Box.IsChecked == true;
+        }
+    }
+
+    private void ChangeRange()
+    {
+        if (_loadingRange) return;
+        StoreRange();
+        if (_levelsChannel is { SelectedIndex: >= 0 } channel) _levels.Channel = (LevelsChannel)channel.SelectedIndex;
+        if (_range is { SelectedIndex: >= 0 } range) _hsv.Range = HueBand.Ranges[range.SelectedIndex];
+        LoadRange();
+        Preview?.Invoke(Built(_start));
+    }
+
+    private void LoadRange()
+    {
+        _loadingRange = true;
+        try
+        {
+            double[] values;
+            if (_start.Kind == AdjustmentKind.Levels)
+            {
+                var range = _levels.Ranges[(int)_levels.Channel];
+                values = [range.Black, range.Gamma, range.White, range.OutputBlack, range.OutputWhite];
+            }
+            else
+            {
+                var range = _hsv.Current;
+                values = [range.Hue, range.Saturation, range.Lightness];
+            }
+            for (var i = 0; i < values.Length; i++) _rows[i].Slider.Value = values[i];
+        }
+        finally { _loadingRange = false; }
     }
 
     private static HueSaturationSettings Hsv(LayerAdjustment settings,
@@ -208,8 +245,11 @@ internal sealed class AdjustmentDialog : DialogWindow
             Colorize = colorize ?? from.Colorize,
             InvertRange = from.InvertRange,
         };
-        foreach (var entry in from.Adjustments.Entries) next.Adjustments.Set(entry.Key, entry.Value);
-        foreach (var entry in from.Bands.Entries) next.Bands.Set(entry.Key, entry.Value);
+        foreach (var entry in from.Adjustments.Entries) next.Adjustments.Set(entry.Key, new RangeAdjustment
+        { Hue = entry.Value.Hue, Saturation = entry.Value.Saturation, Lightness = entry.Value.Lightness });
+        foreach (var entry in from.Bands.Entries) next.Bands.Set(entry.Key, new HueBand
+        { FalloffStart = entry.Value.FalloffStart, RangeStart = entry.Value.RangeStart,
+            RangeEnd = entry.Value.RangeEnd, FalloffEnd = entry.Value.FalloffEnd });
         var current = from.Current;
         next.Set(hue ?? current.Hue, saturation ?? current.Saturation, lightness ?? current.Lightness);
         return next;
@@ -316,17 +356,18 @@ internal sealed class AdjustmentDialog : DialogWindow
             Children =
             {
                 swatch,
-                new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = L10n.T(label), VerticalAlignment = VerticalAlignment.Center },
             },
         });
         _swatches.Add((swatch, set, fallback, atStart, strip));
     }
 
-    private void Check(StackPanel parent, string label, bool value, Action<LayerAdjustment, bool> set)
+    private void Check(StackPanel parent, string label, bool value, Action<LayerAdjustment, bool> set, bool fallback = false)
     {
-        var box = new CheckBox { Content = label, IsChecked = value };
+        var box = new CheckBox { Content = L10n.T(label), IsChecked = value };
         parent.Children.Add(box);
-        _boxes.Add((box, set, value));
+        _boxes.Add((box, set, fallback));
+        box.IsCheckedChanged += (_, _) => { if (!_loadingRange) Preview?.Invoke(Built(_start)); };
     }
 
     private static Control Row(string label, Control control) => new StackPanel
@@ -335,7 +376,7 @@ internal sealed class AdjustmentDialog : DialogWindow
         Spacing = 8,
         Children =
         {
-            new TextBlock { Text = label, Width = 150, VerticalAlignment = VerticalAlignment.Center },
+            new TextBlock { Text = L10n.T(label), Width = 150, VerticalAlignment = VerticalAlignment.Center },
             control,
         },
     };
@@ -350,7 +391,7 @@ internal sealed class AdjustmentDialog : DialogWindow
         {
             if (change.Property != Slider.ValueProperty) return;
             Show();
-            Preview?.Invoke(Built(_start));
+            if (!_loadingRange) Preview?.Invoke(Built(_start));
         };
         Show();
         parent.Children.Add(new StackPanel
@@ -359,7 +400,7 @@ internal sealed class AdjustmentDialog : DialogWindow
             Spacing = 8,
             Children =
             {
-                new TextBlock { Text = label, Width = 150, VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = L10n.T(label), Width = 150, VerticalAlignment = VerticalAlignment.Center },
                 slider,
                 readout,
             },
@@ -371,18 +412,26 @@ internal sealed class AdjustmentDialog : DialogWindow
     /// <summary>Back to what the layer would be made with.</summary>
     private void Restore(LayerAdjustment fresh)
     {
-        for (var i = 0; i < _rows.Count; i++) _rows[i].Slider.Value = _fallbacks[i];
-        foreach (var (box, _, fallback) in _boxes) box.IsChecked = fallback;
-        if (_range is not null) _range.SelectedIndex = HueBand.Ranges.IndexOf(ColorRange.Master);
-        if (_levelsChannel is not null) _levelsChannel.SelectedIndex = (int)fresh.Levels.Channel;
-        if (_curve is not null) _curve.Curves = Clone(fresh.Curves);
-        foreach (var (swatch, set, fallback, atStart, strip) in _swatches)
+        _loadingRange = true;
+        try
         {
-            swatch.Colour = fallback;
-            if (atStart) strip.From = fallback;
-            else strip.To = fallback;
-            strip.Redraw();
+            _levels = Levels(fresh);
+            _hsv = Hsv(fresh);
+            for (var i = 0; i < _rows.Count; i++) _rows[i].Slider.Value = _fallbacks[i];
+            foreach (var (box, _, fallback) in _boxes) box.IsChecked = fallback;
+            if (_range is not null) _range.SelectedIndex = HueBand.Ranges.IndexOf(ColorRange.Master);
+            if (_levelsChannel is not null) _levelsChannel.SelectedIndex = (int)fresh.Levels.Channel;
+            if (_curve is not null) _curve.Curves = Clone(fresh.Curves);
+            foreach (var (swatch, set, fallback, atStart, strip) in _swatches)
+            {
+                swatch.Colour = fallback;
+                if (atStart) strip.From = fallback;
+                else strip.To = fallback;
+                strip.Redraw();
+            }
         }
+        finally { _loadingRange = false; }
+        Preview?.Invoke(Built(_start));
     }
 
     /// <summary>
@@ -417,6 +466,7 @@ internal sealed class AdjustmentDialog : DialogWindow
     /// <summary>The settings as the panel has them, for a preview of what they would do.</summary>
     private LayerAdjustment Built(LayerAdjustment start)
     {
+        StoreRange();
         var settings = new LayerAdjustment
         {
             Kind = start.Kind,
@@ -424,7 +474,8 @@ internal sealed class AdjustmentDialog : DialogWindow
             Saturation = start.Saturation,
             Lightness = start.Lightness,
             Colorize = start.Colorize,
-            Levels = Levels(start),
+            Levels = Levels(new LayerAdjustment { Levels = _levels }),
+            HsvSettings = Hsv(new LayerAdjustment { HsvSettings = _hsv }),
             Curves = start.Curves,
             ExposureSettings = start.ExposureSettings,
             GradientMapSettings = start.GradientMapSettings,
@@ -443,7 +494,7 @@ internal sealed class AdjustmentDialog : DialogWindow
         foreach (var (slider, set) in _rows) set(settings, slider.Value);
         foreach (var (box, set, _) in _boxes) set(settings, box.IsChecked == true);
         foreach (var (swatch, set, _, _, _) in _swatches) set(settings, swatch.Colour);
-        // The rows build the range-aware settings from the layer's own, so the range goes on afterwards.
+        // The selected range and every previously edited range are retained in the draft.
         if (_range is { SelectedIndex: >= 0 } range)
         {
             settings.HsvSettings ??= Hsv(settings);
@@ -464,7 +515,9 @@ internal sealed class AdjustmentDialog : DialogWindow
         Action<LayerAdjustment>? preview = null)
     {
         var dialog = new AdjustmentDialog(start) { Preview = preview };
-        await dialog.ShowDialog(owner);
+        var closed = dialog.ShowDialog(owner);
+        dialog.Preview?.Invoke(dialog.Built(start));
+        await closed;
         return dialog._result;
     }
 }

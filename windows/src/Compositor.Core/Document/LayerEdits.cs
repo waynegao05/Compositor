@@ -73,11 +73,17 @@ public static class LayerEdits
     }
 
     /// <summary>Moves one layer by whole document pixels. A linked mask follows it.</summary>
-    public static bool Move(CanvasDocument document, Guid layerID, double dx, double dy)
+    public static bool Move(CanvasDocument document, Guid layerID, double dx, double dy) =>
+        Move(document, [layerID], dx, dy);
+
+    /// <summary>Moves the selected visible pixel layers and folder contents once each.</summary>
+    public static bool Move(CanvasDocument document, IReadOnlyCollection<Guid> ids, double dx, double dy)
     {
-        if (Find(document, layerID) is not { } layer) return false;
-        layer.Transform = layer.Transform with { X = layer.Transform.X + dx, Y = layer.Transform.Y + dy };
-        return true;
+        if (!double.IsFinite(dx) || !double.IsFinite(dy) || (dx == 0 && dy == 0)) return false;
+        if (TransformEdits.GroupBox(document, ids) is not { } from) return false;
+        var to = TransformEdits.Move(from, dx, dy);
+        var originals = TransformEdits.GroupMembers(document, ids).ToDictionary(layer => layer.ID, layer => layer.Transform);
+        return TransformEdits.Carry(document, originals, from, to);
     }
 
 
@@ -111,7 +117,8 @@ public static class LayerEdits
     public static bool SetBlendMode(CanvasDocument document, Guid layerID, Format.LayerBlendMode mode)
     {
         if (Find(document, layerID) is not { } layer) return false;
-        if (!Enum.IsDefined(mode) || layer.BlendMode == mode) return false;
+        if (!Enum.IsDefined(mode) || layer.BlendMode == mode
+            || (layer.IsGroup && mode != LayerBlendMode.Normal)) return false;
         layer.BlendMode = mode;
         return true;
     }
@@ -209,11 +216,19 @@ public static class LayerEdits
     /// or to unlink it, and this port has no such choice yet, so it refuses rather than change the picture
     /// without saying so.
     /// </summary>
-    public static bool Delete(CanvasDocument document, Guid layerID)
+    public static bool Delete(CanvasDocument document, Guid layerID) => Delete(document, [layerID]);
+
+    /// <summary>Deletes a complete selection at once, including folders and their descendants.</summary>
+    public static bool Delete(CanvasDocument document, IReadOnlyCollection<Guid> layerIDs)
     {
-        if (Find(document, layerID) is not { } layer) return false;
-        var removed = document.Descendants(layerID);
-        removed.Add(layerID);
+        if (layerIDs.Count == 0) return false;
+        var removed = new HashSet<Guid>();
+        foreach (var id in layerIDs)
+        {
+            if (Find(document, id) is null) return false;
+            removed.Add(id);
+            removed.UnionWith(document.Descendants(id));
+        }
         foreach (var other in document.Layers)
         {
             if (!removed.Contains(other.ID) && other.MaskSourceID is { } source && removed.Contains(source)) return false;
@@ -232,24 +247,10 @@ public static class LayerEdits
     /// </summary>
     private static List<ImageLayer> Members(CanvasDocument document, IReadOnlyCollection<Guid> ids)
     {
-        var folders = document.Layers.Where(layer => layer.IsGroup && ids.Contains(layer.ID))
-            .Select(layer => layer.ID).ToHashSet();
-        var wanted = new HashSet<Guid>();
-        // Two passes, because a folder record may sit above or below its children in the array.
-        for (var pass = 0; pass < 2; pass++)
+        var wanted = ids.ToHashSet();
+        foreach (var folder in document.Layers.Where(layer => layer.IsGroup && wanted.Contains(layer.ID)).ToArray())
         {
-            foreach (var layer in document.Layers)
-            {
-                if (ids.Contains(layer.ID))
-                {
-                    wanted.Add(layer.ID);
-                    if (layer.IsGroup) folders.Add(layer.ID);
-                }
-                else if (layer.ParentID is { } parent && folders.Contains(parent))
-                {
-                    wanted.Add(layer.ID);
-                }
-            }
+            wanted.UnionWith(document.Descendants(folder.ID));
         }
         return document.Layers.Where(layer => wanted.Contains(layer.ID) && !layer.IsGroup).ToList();
     }

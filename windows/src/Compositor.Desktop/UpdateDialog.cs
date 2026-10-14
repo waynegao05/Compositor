@@ -8,12 +8,8 @@ using Compositor.Core.IO;
 namespace Compositor.Desktop;
 
 /// <summary>
-/// Help ▸ Check for Updates: reads the app's update feed and says whether there is anything newer.
-/// <para>
-/// The feed is the one the Mac build publishes, which points at a Mac download, so what this can honestly offer
-/// is the news — a new version exists, and where to read what changed — rather than an installer for this
-/// machine. Making the Windows build from this repository is what actually updates it.
-/// </para>
+/// Shows the Windows community build's own version information. The upstream macOS feed does not describe
+/// this distribution, so it must not be used to claim this build is current or offer a macOS installer.
 /// </summary>
 internal sealed class UpdateDialog : DialogWindow
 {
@@ -26,7 +22,7 @@ internal sealed class UpdateDialog : DialogWindow
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        var close = new Button { Content = "Close", IsCancel = true, IsDefault = true };
+        var close = new Button { Content = L10n.T("Close"), IsCancel = true, IsDefault = true };
         close.Click += (_, _) => Close();
         var buttons = new StackPanel
         {
@@ -36,7 +32,7 @@ internal sealed class UpdateDialog : DialogWindow
         };
         if (page is not null)
         {
-            var open = new Button { Content = "What changed…" };
+            var open = new Button { Content = L10n.T("View Source…") };
             open.Click += (_, _) => Open(page);
             buttons.Children.Add(open);
         }
@@ -72,11 +68,18 @@ internal sealed class UpdateDialog : DialogWindow
         await new UpdateDialog(title, message, page).ShowDialog(owner);
     }
 
+    /// <summary>No network check is made until this distribution has a dedicated Windows release feed.</summary>
+    public static Task ShowWindowsReleaseInfo(Window owner) => Ask(owner,
+        L10n.T("Windows Version Information"),
+        L10n.F("Compositor {0}\nWindows community build\n\nAutomatic updates for this Windows build are not yet available. The upstream macOS releases cannot update this application.", Running));
+
     /// <summary>The version this build is: the one in the project file, read back off the assembly.</summary>
     public static AppVersion Running
     {
         get
         {
+            var displayVersion = AppDiagnostics.Version.Split('+')[0];
+            if (AppVersion.Parse(displayVersion) is { } preview) return preview;
             var version = Assembly.GetExecutingAssembly().GetName().Version;
             return version is null ? new AppVersion(0, 0, 0, "") : new AppVersion(version.Major, version.Minor, version.Build, "");
         }

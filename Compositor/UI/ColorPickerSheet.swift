@@ -130,7 +130,7 @@ struct ColorPickerSheet: View {
                 hsb.setRGB(rgb)
             })
         return GridRow {
-            Text(label).frame(width: 14, alignment: .leading)
+            Text(L10n.tr(label)).frame(width: 14, alignment: .leading)
                 .scrubbable(sensitivity: 1, value: channelValue, range: 0...255)
             TextField(label, value: channelValue, format: .number)
                 .frame(width: 52)

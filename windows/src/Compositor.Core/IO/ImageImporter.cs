@@ -37,8 +37,8 @@ public sealed class ImportException : Exception
 /// <summary>
 /// Reads an image file into the pixels a layer holds. Skia decodes JPEG, PNG, WebP, GIF and BMP; TIFF goes
 /// through LibTiff, because Skia ships no TIFF decoder; SVG is drawn once into pixels by <c>Svg.Skia</c> and
-/// does not stay vector, as the Mac build's does not. Camera RAW, HEIC and Photoshop files are not read
-/// here yet and say so rather than failing obscurely.
+/// does not stay vector, as the Mac build's does not. Camera RAW uses LibRaw and HEIC uses ImageMagick;
+/// Photoshop files are imported as documents through PsdImporter.
 /// </summary>
 public static class ImageImporter
 {
@@ -46,13 +46,16 @@ public static class ImageImporter
     public static readonly string[] Extensions =
         [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".tif", ".tiff", ".psd", ".psb",
          ".heic", ".heif", ".avif", ".dng", ".cr2", ".cr3", ".crw", ".nef", ".nrw", ".arw", ".srf", ".sr2",
-         ".raf", ".orf", ".rw2", ".raw", ".rwl", ".pef", ".3fr", ".erf", ".mrw", ".kdc", ".dcr", ".x3f", ".iiq"];
+         ".raf", ".orf", ".rw2", ".raw", ".rwl", ".pef", ".3fr", ".erf", ".mrw", ".kdc", ".dcr", ".x3f", ".iiq", ".mos", ".mef"];
 
     /// <summary>The longest side of the small copy the layers panel draws, as the Mac build uses.</summary>
     public const int ThumbnailSide = 96;
 
     public static bool LooksImportable(string path) =>
         Extensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Whether the file uses the LibRaw decoder and its native runtime dependencies.</summary>
+    public static bool IsRaw(string path) => RawReads.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Reads one image. <paramref name="fitting"/> is the canvas an SVG should be drawn to fit.</summary>
     public static ImportedImage Decode(string path) => Decode(path, null, DocumentLimits.DocumentPixelBudget);
@@ -234,41 +237,62 @@ public static class ImageImporter
     }
 
     /// <summary>
-    /// A TIFF through LibTiff, which is the only way to read one here: Skia ships no TIFF decoder. The
-    /// library hands back rows bottom first and channels in ABGR order; a layer's pixels are top first, so
-    /// both are turned round on the way in.
+    /// LibTiff returns associated-alpha ABGR with rows bottom first. Read the stored grid without its
+    /// orientation, then turn each pixel once while converting it to straight-alpha RGBA.
     /// </summary>
     private static ImportedImage DecodeTiff(string path, string name, int remainingPixels)
     {
         using var tiff = Tiff.Open(path, "r") ?? throw new ImportException(ImportError.Unreadable);
         var width = tiff.GetField(TiffTag.IMAGEWIDTH)?[0].ToInt() ?? 0;
         var height = tiff.GetField(TiffTag.IMAGELENGTH)?[0].ToInt() ?? 0;
-        if (width <= 0 || height <= 0) throw new ImportException(ImportError.Unreadable);
-        if (width > DocumentLimits.MaxSide || height > DocumentLimits.MaxSide
-            || (long)width * height > remainingPixels)
-        {
-            throw new ImportException(ImportError.TooLarge);
-        }
+        Check(width, height, remainingPixels);
+        var orientation = tiff.GetField(TiffTag.ORIENTATION)?[0].ToInt() ?? 1;
+        var densityUnit = tiff.GetField(TiffTag.RESOLUTIONUNIT)?[0].ToInt() ?? 2;
+        var density = tiff.GetField(TiffTag.XRESOLUTION)?[0].ToDouble()
+            ?? tiff.GetField(TiffTag.YRESOLUTION)?[0].ToDouble();
+        var resolution = densityUnit switch { 2 => density, 3 => density * 2.54, _ => null };
+        if (orientation is < 1 or > 8) orientation = 1;
+        // This handle is read-only: changing its in-memory tag leaves the source file untouched.
+        // LibTiff handles flips, but not axis swaps. Apply all eight orientations ourselves.
+        tiff.SetField(TiffTag.ORIENTATION, Orientation.TOPLEFT);
         var raster = new int[width * height];
         if (!tiff.ReadRGBAImage(width, height, raster)) throw new ImportException(ImportError.Unreadable);
 
-        var bitmap = new SKBitmap(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul,
+        var swaps = orientation >= 5;
+        var across = swaps ? height : width;
+        var down = swaps ? width : height;
+        var bitmap = new SKBitmap(new SKImageInfo(across, down, SKColorType.Rgba8888, SKAlphaType.Unpremul,
             SKColorSpace.CreateSrgb()));
+        if (!bitmap.ReadyToDraw) { bitmap.Dispose(); throw new ImportException(ImportError.TooLarge); }
         var pixels = bitmap.GetPixelSpan();
         for (var y = 0; y < height; y++)
         {
-            var source = (height - 1 - y) * width;
-            var destination = y * width * 4;
             for (var x = 0; x < width; x++)
             {
-                var pixel = raster[source + x];
-                pixels[destination + x * 4] = (byte)pixel;
-                pixels[destination + x * 4 + 1] = (byte)(pixel >> 8);
-                pixels[destination + x * 4 + 2] = (byte)(pixel >> 16);
-                pixels[destination + x * 4 + 3] = (byte)(pixel >> 24);
+                var (toX, toY) = orientation switch
+                {
+                    2 => (width - 1 - x, y),
+                    3 => (width - 1 - x, height - 1 - y),
+                    4 => (x, height - 1 - y),
+                    5 => (y, x),
+                    6 => (height - 1 - y, x),
+                    7 => (height - 1 - y, width - 1 - x),
+                    8 => (y, width - 1 - x),
+                    _ => (x, y),
+                };
+                var pixel = raster[(height - 1 - y) * width + x];
+                var alpha = (byte)(pixel >> 24);
+                var destination = (toY * across + toX) * 4;
+                for (var channel = 0; channel < 3; channel++)
+                {
+                    var associated = (byte)(pixel >> (channel * 8));
+                    pixels[destination + channel] = alpha == 0 ? (byte)0
+                        : (byte)Math.Min(255, (associated * 255 + alpha / 2) / alpha);
+                }
+                pixels[destination + 3] = alpha;
             }
         }
-        return ImportedImage.Create(bitmap, name);
+        return ImportedImage.Create(bitmap, name, resolution);
     }
 
     /// <summary>The kinds Skia decodes here, so a corrupt one of these is damage rather than a wrong format.</summary>
@@ -280,9 +304,11 @@ public static class ImageImporter
         using var data = SKData.CreateCopy(bytes);
         using var codec = SKCodec.Create(data);
         if (codec is null) return false;
+        Check(codec.Info.Width, codec.Info.Height, remainingPixels);
         var info = new SKImageInfo(codec.Info.Width, codec.Info.Height, SKColorType.Rgba8888, SKAlphaType.Unpremul,
             SKColorSpace.CreateSrgb());
         using var decoded = new SKBitmap(info);
+        if (!decoded.ReadyToDraw) throw new ImportException(ImportError.TooLarge);
         var result = codec.GetPixels(info, decoded.GetPixels());
         if (result is not (SKCodecResult.Success or SKCodecResult.IncompleteInput)) return false;
 
@@ -295,7 +321,7 @@ public static class ImageImporter
             oriented.Dispose();
             throw new ImportException(ImportError.TooLarge);
         }
-        image = ImportedImage.Create(oriented, name);
+        image = ImportedImage.Create(oriented, name, ImageResolution.Read(bytes));
         return true;
     }
 
@@ -326,9 +352,9 @@ public static class ImageImporter
     }
 
     /// <summary>A canvas holding the image at its own size, as a new project starts.</summary>
-    public static CanvasDocument NewDocument(ImportedImage image, double resolution = 72)
+    public static CanvasDocument NewDocument(ImportedImage image, double? resolution = null)
     {
-        var document = new CanvasDocument(Guid.NewGuid(), image.Width, image.Height, resolution);
+        var document = new CanvasDocument(Guid.NewGuid(), image.Width, image.Height, resolution ?? image.Resolution ?? 72);
         document.Layers.Add(Layer(image));
         return document;
     }

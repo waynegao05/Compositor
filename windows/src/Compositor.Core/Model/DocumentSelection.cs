@@ -73,6 +73,17 @@ public sealed class DocumentSelection
         return new DocumentSelection(moved, Antialiased, Feather);
     }
 
+    /// <summary>The outline scaled with an image-size change. Feather remains a distance in document pixels.</summary>
+    public DocumentSelection Scaled(double sx, double sy)
+    {
+        if (Path is not { } path) return this;
+        using var builder = new SKPathBuilder();
+        builder.AddPath(path, SKPathAddMode.Append);
+        var scaled = builder.Detach();
+        scaled.Transform(SKMatrix.CreateScale((float)sx, (float)sy));
+        return new DocumentSelection(scaled, Antialiased, Feather);
+    }
+
     /// <summary>
     /// The rectangle of the canvas a selection can affect: its own bounds, grown by what a feather reaches
     /// and by a pixel for the antialiased edge. An empty rectangle means the selection affects nothing.

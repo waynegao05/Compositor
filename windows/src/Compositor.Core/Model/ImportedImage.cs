@@ -9,16 +9,19 @@ namespace Compositor.Core.Model;
 /// </summary>
 public sealed class ImportedImage : IDisposable
 {
-    public ImportedImage(SKBitmap image, SKBitmap thumbnail, string name)
+    public ImportedImage(SKBitmap image, SKBitmap thumbnail, string name, double? resolution = null)
     {
         Image = image;
         Thumbnail = thumbnail;
         Name = name;
+        Resolution = resolution is >= 1 and <= 9600 ? resolution : null;
     }
 
     public SKBitmap Image { get; private set; }
     public SKBitmap Thumbnail { get; private set; }
     public string Name { get; private set; }
+    /// <summary>Source pixels per inch, when the file supplies a valid physical density.</summary>
+    public double? Resolution { get; }
 
     public int Width => Image.Width;
     public int Height => Image.Height;
@@ -30,8 +33,8 @@ public sealed class ImportedImage : IDisposable
         return (Math.Max(1, (int)(width * factor)), Math.Max(1, (int)(height * factor)));
     }
 
-    public static ImportedImage Create(SKBitmap image, string name) =>
-        new(image, Bitmaps.Thumbnail(image), name);
+    public static ImportedImage Create(SKBitmap image, string name, double? resolution = null) =>
+        new(image, Bitmaps.Thumbnail(image), name, resolution);
 
     public void Dispose()
     {

@@ -1,0 +1,7 @@
+{
+  "Finish text editing before changing the image.": "请先完成文字编辑，再修改图像。",
+  "Finish the current edit before saving.": "请先完成当前编辑，再保存。",
+  "Could not save keyboard shortcuts: {0}": "无法保存键盘快捷键：{0}",
+  "Enter a finite guide position between -1000000 and 1000000.": "请输入 -1000000 至 1000000 之间的有限参考线位置。",
+  "Enter a finite position between -1,000,000 and 1,000,000 pixels.": "请输入 -1,000,000 至 1,000,000 像素之间的有限位置。"
+}

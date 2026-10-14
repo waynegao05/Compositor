@@ -15,7 +15,7 @@ internal sealed class EffectDialog : DialogWindow
 {
     private readonly List<(Slider Slider, Action<object, double> Set)> _rows = [];
     private readonly List<double> _fallbacks = [];
-    private readonly CheckBox _on = new() { Content = "Draw this effect" };
+    private readonly CheckBox _on = new() { Content = L10n.T("Draw this effect") };
     private readonly CheckBox? _inside;
     private readonly EffectKind _kind;
     private LayerEffects? _result;
@@ -23,7 +23,7 @@ internal sealed class EffectDialog : DialogWindow
     private EffectDialog(EffectKind kind, LayerEffects? start)
     {
         _kind = kind;
-        Title = TitleFor(kind);
+        Title = L10n.T(TitleFor(kind));
         Width = 440;
         Height = 520;
         CanResize = true;
@@ -39,9 +39,9 @@ internal sealed class EffectDialog : DialogWindow
                 _on.IsChecked = current?.Stroke is { IsEnabled: true };
                 Add(group, "Size, pixels", 0, StrokeEffect.MaxSize, stroke.Size, 4, (s, v) => ((StrokeEffect)s).Size = v, "0");
                 Colour(group, "Color", stroke.Red, stroke.Green, stroke.Blue,
-                    (r, g, b) => { stroke.Red = r; stroke.Green = g; stroke.Blue = b; });
+                    (effect, r, g, b) => { var target = (StrokeEffect)effect; target.Red = r; target.Green = g; target.Blue = b; });
                 Add(group, "Opacity", 0, 1, stroke.Opacity, 1, (s, v) => ((StrokeEffect)s).Opacity = v, "0.00");
-                _inside = new CheckBox { Content = "Inside the edge", IsChecked = stroke.Inside };
+                _inside = new CheckBox { Content = L10n.T("Inside the edge"), IsChecked = stroke.Inside };
                 group.Children.Add(_inside);
                 break;
             }
@@ -53,7 +53,7 @@ internal sealed class EffectDialog : DialogWindow
                 Add(group, "Distance, pixels", 0, 5000, shadow.Distance, 20, (s, v) => ((ShadowEffect)s).Distance = v, "0");
                 Add(group, "Blur, pixels", 0, 500, shadow.Blur, 20, (s, v) => ((ShadowEffect)s).Blur = v);
                 Colour(group, "Color", shadow.Red, shadow.Green, shadow.Blue,
-                    (r, g, b) => { shadow.Red = r; shadow.Green = g; shadow.Blue = b; });
+                    (effect, r, g, b) => { var target = (ShadowEffect)effect; target.Red = r; target.Green = g; target.Blue = b; });
                 Add(group, "Opacity", 0, 1, shadow.Opacity, 0.5, (s, v) => ((ShadowEffect)s).Opacity = v, "0.00");
                 break;
             }
@@ -62,7 +62,7 @@ internal sealed class EffectDialog : DialogWindow
                 var overlay = current?.ColorOverlay ?? new ColorOverlayEffect();
                 _on.IsChecked = current?.ColorOverlay is { IsEnabled: true };
                 Colour(group, "Color", overlay.Red, overlay.Green, overlay.Blue,
-                    (r, g, b) => { overlay.Red = r; overlay.Green = g; overlay.Blue = b; });
+                    (effect, r, g, b) => { var target = (ColorOverlayEffect)effect; target.Red = r; target.Green = g; target.Blue = b; });
                 Add(group, "Opacity", 0, 1, overlay.Opacity, 1, (s, v) => ((ColorOverlayEffect)s).Opacity = v, "0.00");
                 break;
             }
@@ -74,7 +74,7 @@ internal sealed class EffectDialog : DialogWindow
                 Add(group, "Distance, pixels", 0, 5000, inner.Distance, 10, (s, v) => ((InnerShadowEffect)s).Distance = v, "0");
                 Add(group, "Blur, pixels", 0, 500, inner.Blur, 10, (s, v) => ((InnerShadowEffect)s).Blur = v);
                 Colour(group, "Color", inner.Red, inner.Green, inner.Blue,
-                    (r, g, b) => { inner.Red = r; inner.Green = g; inner.Blue = b; });
+                    (effect, r, g, b) => { var target = (InnerShadowEffect)effect; target.Red = r; target.Green = g; target.Blue = b; });
                 Add(group, "Opacity", 0, 1, inner.Opacity, 0.5, (s, v) => ((InnerShadowEffect)s).Opacity = v, "0.00");
                 break;
             }
@@ -84,7 +84,7 @@ internal sealed class EffectDialog : DialogWindow
                 _on.IsChecked = current?.OuterGlow is { IsEnabled: true };
                 Add(group, "Size, pixels", 0, 500, glow.Size, 20, (s, v) => ((OuterGlowEffect)s).Size = v);
                 Colour(group, "Color", glow.Red, glow.Green, glow.Blue,
-                    (r, g, b) => { glow.Red = r; glow.Green = g; glow.Blue = b; });
+                    (effect, r, g, b) => { var target = (OuterGlowEffect)effect; target.Red = r; target.Green = g; target.Blue = b; });
                 Add(group, "Opacity", 0, 1, glow.Opacity, 0.75, (s, v) => ((OuterGlowEffect)s).Opacity = v, "0.00");
                 break;
             }
@@ -94,15 +94,15 @@ internal sealed class EffectDialog : DialogWindow
                 _on.IsChecked = current?.InnerGlow is { IsEnabled: true };
                 Add(group, "Size, pixels", 0, 500, glow.Size, 10, (s, v) => ((InnerGlowEffect)s).Size = v);
                 Colour(group, "Color", glow.Red, glow.Green, glow.Blue,
-                    (r, g, b) => { glow.Red = r; glow.Green = g; glow.Blue = b; });
+                    (effect, r, g, b) => { var target = (InnerGlowEffect)effect; target.Red = r; target.Green = g; target.Blue = b; });
                 Add(group, "Opacity", 0, 1, glow.Opacity, 0.75, (s, v) => ((InnerGlowEffect)s).Opacity = v, "0.00");
                 break;
             }
         }
 
-        var ok = new Button { Content = "Apply", IsDefault = true };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
-        var remove = new Button { Content = "Remove" };
+        var ok = new Button { Content = L10n.T("Apply"), IsDefault = true };
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
+        var remove = new Button { Content = L10n.T("Remove") };
         ok.Click += (_, _) => Accept();
         cancel.Click += (_, _) => Close();
         remove.Click += (_, _) =>
@@ -142,17 +142,17 @@ internal sealed class EffectDialog : DialogWindow
 
     /// <summary>Three rows, one channel each, all writing into the same effect.</summary>
     private void Colour(StackPanel parent, string label, double red, double green, double blue,
-        Action<double, double, double> set)
+        Action<object, double, double, double> set)
     {
         var values = new[] { red, green, blue };
         foreach (var (channel, index) in new[] { ("Red", 0), ("Green", 1), ("Blue", 2) })
         {
             var at = index;
-            Add(parent, $"{label}: {channel}", 0, 1, values[index], values[index],
+            Add(parent, L10n.F("{0}: {1}", L10n.T(label), L10n.T(channel)), 0, 1, values[index], values[index],
                 (effect, value) =>
                 {
                     values[at] = value;
-                    set(values[0], values[1], values[2]);
+                    set(effect, values[0], values[1], values[2]);
                 }, "0.00");
         }
     }
@@ -179,7 +179,7 @@ internal sealed class EffectDialog : DialogWindow
             Spacing = 8,
             Children =
             {
-                new TextBlock { Text = label, Width = 140, VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = L10n.T(label), Width = 140, VerticalAlignment = VerticalAlignment.Center },
                 slider,
                 readout,
             },

@@ -64,6 +64,29 @@ public class ImageImportTests : IDisposable
     }
 
     [Fact]
+    public void ThePixelBudgetIsCheckedBeforeTryingToDecodeDamagedPixelData()
+    {
+        // The GIF header and image descriptor are valid. The LZW stream starts with clear (4),
+        // then an undefined code (7), so reading its one pixel must fail if decoding is attempted.
+        byte[] gif = [71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 128, 0, 0,
+            0, 0, 0, 255, 255, 255, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 124, 1, 0, 59];
+        var path = Write("DamagedPixels.gif", gif);
+        var budget = Assert.Throws<ImportException>(() => ImageImporter.Decode(path, null, remainingPixels: 0));
+        Assert.Equal(ImportError.TooLarge, budget.Error);
+        var damaged = Assert.Throws<ImportException>(() => ImageImporter.Decode(path, null, remainingPixels: 1));
+        Assert.Equal(ImportError.Unreadable, damaged.Error);
+    }
+
+    [Theory]
+    [InlineData(".mos")]
+    [InlineData(".MEF")]
+    public void EveryAdvertisedRawDecoderHasAnImportEntry(string extension)
+    {
+        Assert.True(ImageImporter.IsRaw("Camera" + extension));
+        Assert.True(ImageImporter.LooksImportable("Camera" + extension));
+    }
+
+    [Fact]
     public void AFileThatIsNotAnImageIsRefusedAsUnreadable()
     {
         var path = Write("Broken.png", "this is not a png"u8.ToArray());
@@ -172,6 +195,66 @@ public class ImageImportTests : IDisposable
         Assert.Equal(3, imported.Image.GetPixel(2, 0).Red); // C at the top right
         Assert.Equal(4, imported.Image.GetPixel(0, 1).Red); // D at the bottom left, so rows are not flipped
         Assert.Equal(6, imported.Image.GetPixel(2, 1).Red);
+    }
+
+    [Theory]
+    [InlineData(1, "ABC/DEF")]
+    [InlineData(2, "CBA/FED")]
+    [InlineData(3, "FED/CBA")]
+    [InlineData(4, "DEF/ABC")]
+    [InlineData(5, "AD/BE/CF")]
+    [InlineData(6, "DA/EB/FC")]
+    [InlineData(7, "FC/EB/DA")]
+    [InlineData(8, "CF/BE/AD")]
+    public void ATiffAppliesEachOrientationOnceAndKeepsItsSource(int orientation, string expected)
+    {
+        var path = WriteTiff("Turned.tif", 3, 2, orientation,
+            [1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0, 5, 0, 0, 6, 0, 0]);
+        var sourceBytes = File.ReadAllBytes(path);
+        using var imported = ImageImporter.Decode(path);
+        var rows = expected.Split('/');
+        Assert.Equal(rows[0].Length, imported.Width);
+        Assert.Equal(rows.Length, imported.Height);
+        for (var y = 0; y < imported.Height; y++)
+            for (var x = 0; x < imported.Width; x++)
+                Assert.Equal(rows[y][x] - 'A' + 1, imported.Image.GetPixel(x, y).Red);
+        Assert.Equal(sourceBytes, File.ReadAllBytes(path));
+    }
+
+    [Theory]
+    [InlineData(1, 128, 64, 0)]
+    [InlineData(2, 255, 128, 0)]
+    public void ATiffConvertsAssociatedPixelsToStraightAlpha(int extraSample, byte red, byte green, byte blue)
+    {
+        var path = WriteTiff("Alpha.tif", 2, 1, 1, [red, green, blue, 128, 0, 0, 0, 0], extraSample);
+        using var imported = ImageImporter.Decode(path);
+        Assert.Equal(SKAlphaType.Unpremul, imported.Image.AlphaType);
+        var pixel = imported.Image.GetPixel(0, 0);
+        Assert.Equal(255, pixel.Red);
+        Assert.InRange(pixel.Green, 127, 129);
+        Assert.Equal(0, pixel.Blue);
+        Assert.Equal(128, pixel.Alpha);
+        // Fully transparent pixels use zero RGB; SKColors.Transparent is transparent white.
+        Assert.Equal(new SKColor(0, 0, 0, 0), imported.Image.GetPixel(1, 0));
+    }
+
+    private string WriteTiff(string name, int width, int height, int orientation, byte[] pixels, int? extraSample = null)
+    {
+        var path = Path.Combine(_root, name);
+        using var writer = Tiff.Open(path, "w");
+        Assert.NotNull(writer);
+        writer.SetField(TiffTag.IMAGEWIDTH, width);
+        writer.SetField(TiffTag.IMAGELENGTH, height);
+        writer.SetField(TiffTag.SAMPLESPERPIXEL, extraSample is null ? 3 : 4);
+        writer.SetField(TiffTag.BITSPERSAMPLE, 8);
+        writer.SetField(TiffTag.ORIENTATION, (Orientation)orientation);
+        writer.SetField(TiffTag.PLANARCONFIG, PlanarConfig.CONTIG);
+        writer.SetField(TiffTag.PHOTOMETRIC, Photometric.RGB);
+        writer.SetField(TiffTag.COMPRESSION, Compression.NONE);
+        writer.SetField(TiffTag.ROWSPERSTRIP, height);
+        if (extraSample is { } sample) writer.SetField(TiffTag.EXTRASAMPLES, 1, new short[] { (short)sample });
+        Assert.Equal(pixels.Length, writer.WriteEncodedStrip(0, pixels, pixels.Length));
+        return path;
     }
 
     [Fact]

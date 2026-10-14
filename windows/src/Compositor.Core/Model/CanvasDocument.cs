@@ -79,7 +79,13 @@ public sealed class CanvasDocument : IDisposable
         Layers.Clear();
         Layers.AddRange(other.Layers.Select(layer => layer.Clone()));
         Guides.Clear();
-        Guides.AddRange(other.Guides);
+        // A restored document must not mutate the snapshot kept for later undo or redo.
+        Guides.AddRange(other.Guides.Select(guide => new CanvasGuide
+        {
+            ID = guide.ID,
+            Axis = guide.Axis,
+            Position = guide.Position,
+        }));
         Selection = other.Selection;
     }
 

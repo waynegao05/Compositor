@@ -46,14 +46,21 @@ public static class GuidedUpright
     public const double Keystone = 25;
 
     public static (double Vertical, double Horizontal, double Rotate) Corrections(
-        IReadOnlyList<CameraRawGeometryGuide> guides)
+        IReadOnlyList<CameraRawGeometryGuide> guides) => Corrections(guides, 1, 1);
+
+    /// <summary>Reads normalized guides on the image pixel grid, accounting for its aspect ratio.</summary>
+    public static (double Vertical, double Horizontal, double Rotate) Corrections(
+        IReadOnlyList<CameraRawGeometryGuide> guides, double width, double height)
     {
+        if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 0 || height <= 0) return (0, 0, 0);
+        double Degrees(CameraRawGeometryGuide guide) =>
+            Math.Atan2((guide.EndY - guide.StartY) * height, (guide.EndX - guide.StartX) * width) * 180 / Math.PI;
         if (guides.Count == 0) return (0, 0, 0);
         var first = guides[0];
         if (!(first.Length > 1e-4)) return (0, 0, 0);
         // A line is levelled by turning the picture back through its own angle; an angle past a quarter turn
         // is the same line read the other way round, so it is brought back inside the range a turn allows.
-        var rotate = -first.Degrees;
+        var rotate = -Degrees(first);
         if (rotate > 45) rotate -= 90;
         else if (rotate < -45) rotate += 90;
         var vertical = 0.0;
@@ -63,9 +70,9 @@ public static class GuidedUpright
             var second = guides[1];
             if (second.Length > 1e-4)
             {
-                var steep = Math.Abs(second.Degrees) > 45;
-                if (steep) vertical = second.Degrees > 0 ? Keystone : -Keystone;
-                else horizontal = second.Degrees > 0 ? Keystone : -Keystone;
+                var steep = Math.Abs(Degrees(second)) > 45;
+                if (steep) vertical = Degrees(second) > 0 ? Keystone : -Keystone;
+                else horizontal = Degrees(second) > 0 ? Keystone : -Keystone;
             }
         }
         return (vertical, horizontal, rotate);

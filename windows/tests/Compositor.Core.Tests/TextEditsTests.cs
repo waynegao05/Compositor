@@ -173,6 +173,102 @@ public class TextEditsTests : IDisposable
     }
 
     [Fact]
+    public void AChineseParagraphWrapsWithoutSpaces()
+    {
+        var style = Style("中文排版需要自动换行", 24);
+        var twoCharacters = TextEdits.Caret(Style("中文", 24)).X - TextEdits.Padding;
+        style.BoxSize = new JsonSize { Width = twoCharacters + TextEdits.Padding * 2 + 0.1, Height = 400 };
+
+        var start = TextEdits.Caret(style, 0);
+        var end = TextEdits.Caret(style);
+        Assert.True(end.Y >= start.Y + style.LineHeight * 3, "the continuous Chinese paragraph did not wrap");
+        Assert.True(end.X <= style.BoxSize.Value.Width - TextEdits.Padding + 0.1, "the last line exceeds its box");
+    }
+
+    [Theory]
+    [InlineData("甲乙，丙", "乙，")]
+    [InlineData("甲（乙丙", "（乙")]
+    [InlineData("甲乙。丙", "乙。")]
+    [InlineData("甲“乙丙", "“乙")]
+    public void ChinesePunctuationStaysWithItsNeighbor(string content, string group)
+    {
+        var style = Style(content, 24);
+        var groupWidth = TextEdits.Caret(Style(group, 24)).X - TextEdits.Padding;
+        style.BoxSize = new JsonSize { Width = groupWidth + TextEdits.Padding * 2 + 0.1, Height = 400 };
+
+        Assert.True(TextEdits.Caret(style, 2).Y > TextEdits.Caret(style, 1).Y);
+        Assert.Equal(TextEdits.Caret(style, 2).Y, TextEdits.Caret(style, 3).Y, 2);
+    }
+
+    [Fact]
+    public void EnglishWordsUseTheAvailableWidthBeforeWrapping()
+    {
+        var style = Style("one two three", 24);
+        var firstTwoWidth = TextEdits.Caret(Style("one two", 24)).X - TextEdits.Padding;
+        style.BoxSize = new JsonSize { Width = firstTwoWidth + TextEdits.Padding * 2 + 0.1, Height = 400 };
+
+        Assert.Equal(TextEdits.Caret(style, 1).Y, TextEdits.Caret(style, 7).Y, 2);
+        Assert.True(TextEdits.Caret(style).Y > TextEdits.Caret(style, 7).Y);
+    }
+
+    [Fact]
+    public void AnUnbrokenEnglishWordIsKeptTogetherInANarrowBox()
+    {
+        var style = Style("unbroken", 24);
+        style.BoxSize = new JsonSize { Width = 30, Height = 400 };
+        Assert.Equal(TextEdits.Caret(style, 0).Y, TextEdits.Caret(style).Y, 2);
+    }
+
+    [Theory]
+    [InlineData("e\u0301")]
+    [InlineData("😀")]
+    [InlineData("👩‍🔬")]
+    [InlineData("🇨🇳")]
+    public void TrackingAndCaretStopsKeepGraphemeClustersTogether(string cluster)
+    {
+        var plain = Style(cluster, 24);
+        var tracked = Style(cluster, 24);
+        tracked.Tracking = 10;
+        Assert.Equal(10, TextEdits.Caret(tracked).X - TextEdits.Caret(plain).X, 2);
+        for (var index = 1; index <= cluster.Length; index++)
+            Assert.Equal(TextEdits.Caret(plain), TextEdits.Caret(plain, index));
+    }
+
+    [Fact]
+    public void AColorRunAfterAnEmojiStillUsesUtf16Offsets()
+    {
+        const string emoji = "👩‍🔬";
+        var style = Style(emoji + "X", 48);
+        style.ColorRuns = [new LayerTextColorRun { Location = emoji.Length, Length = 1, Red = 1, Green = 0, Blue = 0 }];
+        using var image = TextEdits.Image(style)!;
+        var red = Ink(image, SKColors.Red);
+        Assert.True(red.Count > 0, "the UTF-16 color run after the emoji was not drawn");
+        Assert.True(red.Left >= TextEdits.Caret(style, emoji.Length).X - 1);
+    }
+
+    [Fact]
+    public void ALayerNameDoesNotEndWithPartOfAGraphemeCluster()
+    {
+        Assert.Equal(new string('x', 39), TextEdits.LayerName(new string('x', 39) + "😀tail"));
+        Assert.Equal(new string('x', 39), TextEdits.LayerName(new string('x', 39) + "e\u0301tail"));
+    }
+
+    [Fact]
+    public void ChineseMeasurementUsesTheSystemFallbackWhenOneIsAvailable()
+    {
+        var style = Style("中", 48);
+        var preferred = TextEdits.Typeface(style.FontName);
+        using var original = new SKFont(preferred, (float)style.FontSize);
+        using var fallback = original.ContainsGlyph('中') ? null
+            : SKFontManager.Default.MatchCharacter(preferred.FamilyName, preferred.FontStyle, null, '中');
+        using var expected = new SKFont(fallback ?? preferred, (float)style.FontSize);
+
+        Assert.Equal(expected.MeasureText("中"), TextEdits.Caret(style).X - TextEdits.Padding, 2);
+        using var image = TextEdits.Image(style);
+        Assert.NotNull(image);
+    }
+
+    [Fact]
     public void AnUnknownFaceFallsBackToTheOneTheSystemHas()
     {
         Assert.NotNull(TextEdits.Typeface("No such face at all"));

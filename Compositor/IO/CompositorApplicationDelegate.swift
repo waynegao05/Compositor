@@ -9,6 +9,11 @@ final class CompositorApplicationDelegate: NSObject, NSApplicationDelegate {
     /// Checks the update feed and installs new versions (Sparkle). Started only after launch: its first-run prompt,
     /// shown during launch, kept the editor window from ever opening.
     let updater = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+    /// A fork must configure its own signed release feed before enabling updates.
+    var updatesEnabled: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "CompositorUpdatesEnabled") as? Bool == true
+            && Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String != nil
+    }
 
     // Finder Open With and Dock drops, including files delivered during launch.
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -39,6 +44,7 @@ final class CompositorApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard updatesEnabled else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [updater] in updater.startUpdater() }
     }
 

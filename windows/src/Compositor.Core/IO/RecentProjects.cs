@@ -18,8 +18,7 @@ public sealed class RecentProjects
     public RecentProjects(string path) => Path = path;
 
     /// <summary>Where the list is kept for whoever is using the app.</summary>
-    public static string DefaultPath => System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Compositor", "recent.json");
+    public static string DefaultPath => System.IO.Path.Combine(AppDataPaths.Root, "recent.json");
 
     public string Path { get; }
 

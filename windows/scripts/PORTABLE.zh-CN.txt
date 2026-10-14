@@ -1,0 +1,44 @@
+Compositor Windows 11 x64 便携版
+
+1. 将 ZIP 完整解压到具有写入权限的本地文件夹。
+2. 双击 Compositor.Desktop.exe 启动。请保留同目录的 DLL 和其他文件。
+3. 此包自带 .NET 运行时，无需另外安装 .NET SDK 或运行时。基础 PNG/JPEG 编辑使用包内组件。
+   相机 RAW 导入还需 Microsoft Visual C++ v14 Redistributable（x64），该组件未随包分发。
+4. 编辑后先保存 .comp 工程，再按需要导出图片。首次使用建议保留原始文件备份。
+5. samples/Chinese-Acceptance 包含标准中文工程、参考 PNG 和验收步骤；复制样例后进行试用。
+6. 双击 Run-Diagnostics.cmd 导出本机诊断并打开结果目录；不会自动上传。
+7. 默认跟随系统语言；在“编辑 → 语言”（Edit → Language）选择“简体中文”或“English”，重启后生效。
+
+若 RAW 导入提示依赖无法加载，先确认便携包已完整解压，再手动安装或修复微软 x64 组件，然后重启应用：
+https://aka.ms/vc14/vc_redist.x64.exe
+官方说明：https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170
+程序不会自动下载或安装上述组件。缺少 RAW 支持时仍可编辑 PNG/JPEG。
+
+更完整的自动检查与输入法、缩放测试方法见 Windows11-验收步骤.md。
+运行程序无需 PowerShell 7；完整检查脚本支持 Windows 自带 PowerShell 5.1。
+
+这是基于社区 Windows 移植的衍生版本。开发情况、中文支持范围与已知差异见 README.zh-CN.md。
+此构建未进行代码签名；不会自动安装更新。请从本构建的提供方获取后续 Windows 软件包。
+便携包不注册文件关联，也不会创建开始菜单项。应用设置仍可能写入当前用户的应用数据目录。
+删除解压目录即可移除程序文件，保存在其他位置的工程和用户设置不会随之删除。
+
+本轮已接入本地文件拖放、启动路径参数和系统图像剪贴板，真实 Windows 互通仍需实机验收。
+含中文空格的启动路径请分别加引号，可一次传入多个文件。拖放采用复制操作，不移动或删除源文件。
+未自动注册文件关联，也没有单实例参数转发。可继续使用“文件”菜单打开或导入。
+
+保存过程中断后，应用可提示已登记的有效恢复候选。使用“文件 → 恢复中断的保存…”恢复到全新路径。
+恢复生成新副本，不覆盖原工程，不删除候选原件；登记记录默认在 %APPDATA%\Compositor\Recovery。
+此功能没有定时自动保存，尚未触发保存的编辑和旧版未登记备份不在自动发现范围内。
+
+适用目标：Windows 11 x64。真实中文输入法、多显示器缩放和安装体验仍需在 Windows 11 实机验收。
+ARM64 原生版与安装程序不包含在此包中。
+
+BUILD-INFO.txt 记录构建来源与 SDK；ZIP 旁的 .sha256 文件用于校验下载是否完整。
+PowerShell 校验示例：
+Get-FileHash .\Compositor-Windows-win-x64.zip -Algorithm SHA256
+将输出的 Hash 与 .sha256 文件中的值比较。哈希校验不替代发布者身份验证。
+
+原项目：https://github.com/robbietilton/Compositor
+Windows 移植：https://github.com/chenguisen/Compositor/tree/compositor_win
+许可证：MIT，Copyright (c) 2026 Wonder Assembly LLC。完整文本见 LICENSE。
+依赖组件的原始许可证、声明和包元数据位于 THIRD-PARTY-NOTICES 文件夹。

@@ -70,12 +70,13 @@ public class GuidedUprightTests
     [Fact]
     public void WhatTheLinesAskForIsAddedToTheSliders()
     {
-        // Ten degrees back from the slider's own five is the same picture as the slider set to minus five: the
-        // guided amounts are added to the sliders rather than replacing them.
+        // The guide's pixel-space angle is added to the slider. Its normalized ten-degree angle is
+        // shallower on an 80 by 60 image, so the aspect ratio is included in the expected correction.
         var guided = new CameraRawGeometrySettings { Upright = CameraRawUprightMode.Guided, Rotate = 5 };
         guided.Guides.Add(At(0.1, 0.2, 10));
         var plain = new CameraRawGeometrySettings { Rotate = 5 };
-        var equivalent = new CameraRawGeometrySettings { Rotate = 5 - 10 };
+        var pixelAngle = Math.Atan(Math.Tan(10 * Math.PI / 180) * 60 / 80) * 180 / Math.PI;
+        var equivalent = new CameraRawGeometrySettings { Rotate = 5 - pixelAngle };
         var turned = guided.Corners(80, 60);
         var sliders = plain.Corners(80, 60);
         var same = equivalent.Corners(80, 60);

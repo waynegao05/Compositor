@@ -117,7 +117,7 @@ internal sealed class ToolRail : Grid
                 Background = tool == Tool.Pan ? Skin.TabFront : Brushes.Transparent,
                 BorderThickness = new Thickness(0),
             };
-            ToolTip.SetTip(button, Names[tool]);
+            ToolTip.SetTip(button, L10n.T(Names[tool]));
             var picked = tool;
             button.Click += (_, _) => Chosen?.Invoke(picked);
             _buttons[tool] = button;
@@ -173,7 +173,7 @@ internal sealed class ToolRail : Grid
             BorderThickness = new Thickness(1),
             BorderBrush = new SolidColorBrush(Colors.White, 0.35),
         };
-        ToolTip.SetTip(button, foreground ? "Foreground color" : "Background color");
+        ToolTip.SetTip(button, L10n.T(foreground ? "Foreground color" : "Background color"));
         button.Click += (_, _) => ColourChosen?.Invoke(foreground);
         if (foreground) _front = button;
         else _back = button;
@@ -192,7 +192,7 @@ internal sealed class ToolRail : Grid
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center,
         };
-        ToolTip.SetTip(button, hint);
+        ToolTip.SetTip(button, L10n.T(hint));
         return button;
     }
 

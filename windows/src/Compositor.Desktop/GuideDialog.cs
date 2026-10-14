@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Compositor.Core.Format;
+using Compositor.Core.Document;
 
 namespace Compositor.Desktop;
 
@@ -12,23 +13,24 @@ internal sealed class GuideDialog : DialogWindow
 {
     private readonly ComboBox _axis = new();
     private readonly TextBox _position;
+    private readonly TextBlock _error = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
     private (GuideAxis Axis, double Position)? _result;
 
     private GuideDialog(int width, int height)
     {
-        Title = "New Guide";
+        Title = L10n.T("New Guide");
         Width = 380;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        _axis.ItemsSource = new[] { "Horizontal (across)", "Vertical (up and down)" };
+        _axis.ItemsSource = new[] { "Horizontal (across)", "Vertical (up and down)" }.Select(L10n.T).ToArray();
         _axis.SelectedIndex = 0;
         _axis.Width = 180;
         _position = new TextBox { Text = (height / 2).ToString(), Width = 100 };
 
-        var ok = new Button { Content = "OK", IsDefault = true };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
-        ok.Click += (_, _) => Accept(width, height);
+        var ok = new Button { Content = L10n.T("OK"), IsDefault = true };
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
+        ok.Click += (_, _) => Accept();
         cancel.Click += (_, _) => Close();
 
         Content = new StackPanel
@@ -39,9 +41,10 @@ internal sealed class GuideDialog : DialogWindow
             {
                 Row("Direction", _axis),
                 Row("Position, pixels", _position),
+                _error,
                 new TextBlock
                 {
-                    Text = $"The canvas is {width} x {height}. A guide may sit outside it, out in the pasteboard.",
+                    Text = L10n.F("The canvas is {0} x {1}. A guide may sit outside it, out in the pasteboard.", width, height),
                     TextWrapping = Avalonia.Media.TextWrapping.Wrap,
                 },
                 new StackPanel
@@ -67,18 +70,20 @@ internal sealed class GuideDialog : DialogWindow
         Spacing = 8,
         Children =
         {
-            new TextBlock { Text = label, Width = 120, VerticalAlignment = VerticalAlignment.Center },
+            new TextBlock { Text = L10n.T(label), Width = 120, VerticalAlignment = VerticalAlignment.Center },
             control,
         },
     };
 
-    private void Accept(int width, int height)
+    private void Accept()
     {
-        if (!double.TryParse(_position.Text, out var position)) return;
+        if (!double.TryParse(_position.Text, out var position) || !GuideEdits.Allowed(position))
+        {
+            _error.Text = L10n.T("Enter a finite position between -1,000,000 and 1,000,000 pixels.");
+            return;
+        }
         // A guide across the canvas is a horizontal one, so the first entry is the horizontal axis.
         var axis = _axis.SelectedIndex == 1 ? GuideAxis.Vertical : GuideAxis.Horizontal;
-        var extent = axis == GuideAxis.Vertical ? width : height;
-        if (position < 0 || position > extent) return;
         _result = (axis, position);
         Close();
     }

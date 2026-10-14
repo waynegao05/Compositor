@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text;
 using Compositor.Core.Format;
 using Compositor.Core.Model;
 using SkiaSharp;
@@ -10,10 +11,10 @@ namespace Compositor.Core.Document;
 /// Laying out and drawing a text layer's pixels: the style is the truth and the PNG is what it looks like,
 /// so an edit re-rasterises from the style rather than painting over the last picture.
 /// <para>
-/// Each letter is placed by hand, one at a time, which is what gives every letter its own face and colour
-/// and lets the tracking be added exactly. The cost is that scripts whose glyphs change shape or order by
-/// context — Arabic, Indic — do not shape the way Core Text shapes them in the Mac build; Latin, Greek,
-/// Cyrillic and CJK, which have no such behaviour, come out the same.
+/// Each text element is placed by hand, preserving grapheme clusters and UTF-16 style offsets. System
+/// font fallback covers missing glyphs when a suitable installed face is available. Contextual shaping,
+/// bidirectional layout and joined emoji still need a shaping engine; their rendering can differ from
+/// Core Text in the Mac build.
 /// </para>
 /// </summary>
 public static class TextEdits
@@ -25,12 +26,16 @@ public static class TextEdits
     public const int LeastSide = 16;
 
     private static readonly ConcurrentDictionary<string, SKTypeface> Faces = new();
+    private static readonly ConcurrentDictionary<(SKTypeface Face, int Codepoint), SKTypeface> FallbackFaces = new();
 
     /// <summary>A text layer's name: its first words on one line, so a paragraph does not make the row tall.</summary>
     public static string LayerName(string content)
     {
         var flattened = string.Join(' ', content.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        return flattened.Length == 0 ? "Text" : flattened[..Math.Min(40, flattened.Length)];
+        if (flattened.Length == 0) return "Text";
+        if (flattened.Length <= 40) return flattened;
+        var end = StringInfo.ParseCombiningCharacters(flattened).Last(index => index <= 40);
+        return flattened[..end];
     }
 
     /// <summary>How big a text layer's pixels are: the paragraph's own box, or what point text measures.</summary>
@@ -64,7 +69,7 @@ public static class TextEdits
         foreach (var piece in pieces)
         {
             paint.Color = piece.Colour;
-            var font = new SKFont(piece.Typeface, (float)style.FontSize);
+            using var font = new SKFont(piece.Typeface, (float)style.FontSize);
             canvas.DrawText(piece.Text, piece.X, piece.Y, SKTextAlign.Left, font, paint);
         }
         return image;
@@ -92,26 +97,37 @@ public static class TextEdits
     /// <summary>Changes a text layer's style and draws it again, which is how editing live text works.</summary>
     public static bool SetStyle(CanvasDocument document, Guid layerID, LayerTextStyle style)
     {
-        if (document.Layers.FirstOrDefault(layer => layer.ID == layerID) is not { } layer) return false;
+        if (document.Layers.FirstOrDefault(layer => layer.ID == layerID) is not { LiveText: not null } layer) return false;
         if (Image(style) is not { } image) return false;
-        // The box may have changed with the text, so the layer is re-placed about the middle it had.
-        var centreX = layer.Transform.CenterX;
-        var centreY = layer.Transform.CenterY;
-        var keepsItsPlace = layer.Text is not null;
+        // Repainting changes the raster size, while the layer's scale, rotation and center stay in place.
+        var width = image.Width * (layer.Transform.Width / layer.Asset!.Width);
+        var height = image.Height * (layer.Transform.Height / layer.Asset.Height);
+        var transform = layer.Transform with
+        {
+            Width = width,
+            Height = height,
+            X = layer.Transform.CenterX - width / 2,
+            Y = layer.Transform.CenterY - height / 2,
+        };
+        if (!transform.IsValid)
+        {
+            image.Dispose();
+            return false;
+        }
         var name = LayerName(style.Content);
         layer.Asset = ImportedImage.Create(image, name);
         layer.Text = new LayerText(style, image);
         layer.Name = name;
-        layer.Transform = keepsItsPlace
-            ? layer.Transform with
-            {
-                Width = image.Width,
-                Height = image.Height,
-                X = centreX - image.Width / 2.0,
-                Y = centreY - image.Height / 2.0,
-            }
-            : new Model.LayerTransform(layer.Transform.X, layer.Transform.Y, image.Width, image.Height);
+        layer.Transform = transform;
         return true;
+    }
+
+    /// <summary>The frontmost visible text under the point, including its folders' visibility and opacity.</summary>
+    public static ImageLayer? HitTest(CanvasDocument document, SKPoint point)
+    {
+        var opacities = document.EffectiveOpacities();
+        return document.RenderLayers().LastOrDefault(layer => layer.LiveText is not null
+            && opacities[layer.ID] > 0 && layer.Transform.Contains(point));
     }
 
     /// <summary>
@@ -139,6 +155,17 @@ public static class TextEdits
         return new SKPoint(last.X, last.Y);
     }
 
+    /// <summary>Find an insertion point using one layout pass, with the click in the text's own pixels.</summary>
+    public static int CaretAt(LayerTextStyle style, SKPoint point)
+    {
+        var stops = new List<Stop>();
+        Layout(style, out _, out _, stops);
+        if (stops.Count == 0) return 0;
+        var baseline = stops.MinBy(stop => Math.Abs(stop.Y - point.Y)).Y;
+        return stops.Where(stop => Math.Abs(stop.Y - baseline) < 0.01)
+            .MinBy(stop => Math.Abs(stop.X - point.X)).Index;
+    }
+
     /// <summary>A place the caret can sit: how far into the words, and where that is drawn.</summary>
     private readonly record struct Stop(int Index, float X, float Y);
 
@@ -152,8 +179,11 @@ public static class TextEdits
     }
 
     /// <summary>What a text layer needs to be drawn: its face, its size and the leading between lines.</summary>
-    public static SKFontMetrics Metrics(string fontName, double size) =>
-        new SKFont(Typeface(fontName), (float)size).Metrics;
+    public static SKFontMetrics Metrics(string fontName, double size)
+    {
+        using var font = new SKFont(Typeface(fontName), (float)size);
+        return font.Metrics;
+    }
 
     /// <summary>The face to set text in, falling back to the system face as the Mac build falls back.</summary>
     public static SKTypeface Typeface(string? fontName) =>
@@ -174,7 +204,7 @@ public static class TextEdits
         var pieces = new List<Piece>();
         var content = style.Content ?? "";
         var colours = Colours(style, content.Length);
-        var fonts = Fonts(style, content.Length);
+        var fonts = Fonts(style, content);
         var lineHeight = style.LineHeight;
         // Where the lines have to fit: the paragraph box less its padding, or no limit at all for point text.
         var limit = style.BoxSize is { } box ? Math.Max(1, box.Width - Padding * 2) : double.PositiveInfinity;
@@ -184,7 +214,7 @@ public static class TextEdits
         var line = 0;
         foreach (var (start, length) in Lines(content))
         {
-            foreach (var (from, to) in Wrap(content, start, length, style, fonts, colours, limit))
+            foreach (var (from, to) in Wrap(content, start, length, style, fonts, limit))
             {
                 var width = 0.0;
                 var index = from;
@@ -239,12 +269,12 @@ public static class TextEdits
     /// <summary>The advance of one character: what it measures, plus the tracking, as Core Text adds it.</summary>
     private static double Advance(string text, SKTypeface typeface, LayerTextStyle style)
     {
-        var font = new SKFont(typeface, (float)style.FontSize);
+        using var font = new SKFont(typeface, (float)style.FontSize);
         return font.MeasureText(text) + style.Tracking;
     }
 
     /// <summary>The lines of the content, as (start, length) into it. A break is a newline, in any of its forms.</summary>
-    private static IEnumerable<(int Start, int Length)> Lines(string content)
+    internal static IEnumerable<(int Start, int Length)> Lines(string content)
     {
         var start = 0;
         for (var index = 0; index < content.Length; index++)
@@ -260,40 +290,79 @@ public static class TextEdits
     }
 
     /// <summary>
-    /// The spans of one line that fit: the whole line for point text, or as many words as the box holds. A
-    /// word wider than the box is left on a line of its own rather than being split.
+    /// Greedy word wrapping for Latin text, with additional breaks between CJK text elements. Opening
+    /// punctuation stays with what follows and closing punctuation stays with what precedes it. A word
+    /// or punctuation group wider than the box remains intact rather than splitting a grapheme cluster.
     /// </summary>
     private static IEnumerable<(int From, int To)> Wrap(string content, int start, int length,
-        LayerTextStyle style, List<SKTypeface> fonts, List<SKColor> colours, double limit)
+        LayerTextStyle style, List<SKTypeface> fonts, double limit)
     {
         if (double.IsPositiveInfinity(limit) || length == 0)
         {
             yield return (start, start + length);
             yield break;
         }
+        var end = start + length;
         var from = start;
         var at = start;
-        while (at < start + length)
+        var width = 0.0;
+        var hasWord = false;
+        while (at < end)
         {
-            // Take a word and the spaces that follow it, so the break falls between words.
-            var wordEnd = at;
-            while (wordEnd < start + length && char.IsWhiteSpace(content[wordEnd])) wordEnd++;
-            while (wordEnd < start + length && !char.IsWhiteSpace(content[wordEnd])) wordEnd++;
-            var end = wordEnd;
-            while (end < start + length && content[end] is not ('\n' or '\r')) end++;
-            var width = Width(content, from, end, style, fonts);
-            if (width > limit && from < at)
+            var unitEnd = at;
+            do
             {
-                // This word does not fit after what is already on the line: break before it.
-                yield return (from, at);
+                var previous = NextElement(content, unitEnd, end, out var taken);
+                unitEnd += taken;
+                if (unitEnd == end || CanBreak(previous, NextElement(content, unitEnd, end, out _))) break;
+            } while (unitEnd < end);
+
+            var unitWidth = Width(content, at, unitEnd, style, fonts);
+            var space = IsBreakableSpace(content[at]);
+            if (!space && hasWord && width + unitWidth > limit)
+            {
+                // Spaces at a wrap are omitted; their original UTF-16 offsets remain in the style.
+                var trimmed = at;
+                while (trimmed > from && IsBreakableSpace(content[trimmed - 1])) trimmed--;
+                yield return (from, trimmed);
                 from = at;
-                at = wordEnd;
-                continue;
+                width = 0;
+                hasWord = false;
             }
-            at = wordEnd;
+            width += unitWidth;
+            hasWord |= !space;
+            at = unitEnd;
         }
-        yield return (from, start + length);
+        yield return (from, end);
     }
+
+    private static bool CanBreak(string previous, string next)
+    {
+        var left = Rune.TryGetRuneAt(previous, 0, out var previousRune) ? previousRune : Rune.ReplacementChar;
+        var right = Rune.TryGetRuneAt(next, 0, out var nextRune) ? nextRune : Rune.ReplacementChar;
+        if (IsBreakableSpace(previous[0]) || IsBreakableSpace(next[0])) return true;
+        if (IsNonbreaking(left) || IsNonbreaking(right)) return false;
+        if (IsOpening(left) || IsClosing(right)) return false;
+        return IsCjkOrEmoji(left) || IsCjkOrEmoji(right);
+    }
+
+    private static bool IsBreakableSpace(char value) =>
+        char.IsWhiteSpace(value) && value is not ('\u00a0' or '\u202f');
+
+    private static bool IsNonbreaking(Rune value) => value.Value is 0x00a0 or 0x202f or 0x2060 or 0xfeff;
+
+    private static bool IsOpening(Rune value) =>
+        Rune.GetUnicodeCategory(value) is UnicodeCategory.OpenPunctuation or UnicodeCategory.InitialQuotePunctuation;
+
+    private static bool IsClosing(Rune value) =>
+        Rune.GetUnicodeCategory(value) is UnicodeCategory.ClosePunctuation or UnicodeCategory.FinalQuotePunctuation
+        || value.Value is ',' or '.' or '!' or '?' or ':' or ';'
+            or 0x3001 or 0x3002 or 0xff0c or 0xff0e or 0xff01 or 0xff1f or 0xff1a or 0xff1b or 0x2026;
+
+    private static bool IsCjkOrEmoji(Rune value) => value.Value is
+        >= 0x2e80 and <= 0xa4cf or >= 0xac00 and <= 0xd7af or >= 0xf900 and <= 0xfaff
+        or >= 0xfe30 and <= 0xfe4f or >= 0xff00 and <= 0xffef or >= 0x20000 and <= 0x3ffff
+        or >= 0x1f000 and <= 0x1faff;
 
     private static double Width(string content, int from, int to, LayerTextStyle style, List<SKTypeface> fonts)
     {
@@ -308,12 +377,11 @@ public static class TextEdits
         return width;
     }
 
-    /// <summary>One character out of the content: a whole surrogate pair where there is one.</summary>
+    /// <summary>A complete grapheme cluster, whose starting offset still indexes the UTF-16 style runs.</summary>
     private static string NextElement(string content, int index, int limit, out int taken)
     {
-        var length = char.IsHighSurrogate(content[index]) && index + 1 < limit && char.IsLowSurrogate(content[index + 1]) ? 2 : 1;
-        taken = length;
-        return content.Substring(index, length);
+        taken = Math.Min(StringInfo.GetNextTextElementLength(content, index), limit - index);
+        return content.Substring(index, taken);
     }
 
     /// <summary>Each character's colour: the style's, unless a colour run covers it.</summary>
@@ -332,8 +400,9 @@ public static class TextEdits
     }
 
     /// <summary>Each character's face: the style's, unless a font run covers it.</summary>
-    private static List<SKTypeface> Fonts(LayerTextStyle style, int length)
+    private static List<SKTypeface> Fonts(LayerTextStyle style, string content)
     {
+        var length = content.Length;
         var font = Typeface(style.FontName);
         var fonts = new List<SKTypeface>(length);
         for (var index = 0; index < length; index++) fonts.Add(font);
@@ -343,8 +412,36 @@ public static class TextEdits
             var set = Typeface(run.FontName);
             for (var index = run.Location; index < run.Location + run.Length; index++) fonts[index] = set;
         }
+        for (var index = 0; index < length;)
+        {
+            var element = NextElement(content, index, length, out var taken);
+            var face = FaceForElement(element, fonts[index]);
+            for (var part = index; part < index + taken; part++) fonts[part] = face;
+            index += taken;
+        }
         return fonts;
     }
+
+    private static SKTypeface FaceForElement(string element, SKTypeface preferred)
+    {
+        using var font = new SKFont(preferred);
+        foreach (var rune in element.EnumerateRunes())
+        {
+            if (IsFontControl(rune) || font.ContainsGlyph(rune.Value)) continue;
+            var fallback = FallbackFaces.GetOrAdd((preferred, rune.Value), key =>
+                SKFontManager.Default.MatchCharacter(key.Face.FamilyName, key.Face.FontStyle, null, key.Codepoint)
+                ?? key.Face);
+            // Keep a cluster in one face. Falling back only half of it could detach a combining mark.
+            using var candidate = new SKFont(fallback);
+            if (element.EnumerateRunes().All(part => IsFontControl(part) || candidate.ContainsGlyph(part.Value)))
+                return fallback;
+        }
+        return preferred;
+    }
+
+    private static bool IsFontControl(Rune value) =>
+        Rune.GetUnicodeCategory(value) is UnicodeCategory.Control or UnicodeCategory.Format
+        || value.Value is >= 0xfe00 and <= 0xfe0f or >= 0xe0100 and <= 0xe01ef;
 
     private static bool Covers(int location, int length, int total) =>
         length > 0 && location >= 0 && location <= total - length;

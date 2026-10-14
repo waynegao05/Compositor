@@ -1,0 +1,9 @@
+{
+  "Export Diagnostics…": "导出诊断信息…",
+  "Export Diagnostics": "导出诊断信息",
+  "Open Diagnostics Folder": "打开诊断文件夹",
+  "Diagnostics": "诊断信息",
+  "Could not export diagnostics: {0}": "无法导出诊断信息：{0}",
+  "Could not open the diagnostics folder: {0}": "无法打开诊断文件夹：{0}",
+  "Diagnostics saved to {0}\n\nThe archive contains application logs and system information. Error messages may contain file paths. Review it before sharing. Project files and images are not included, and nothing is uploaded automatically.": "诊断信息已保存到 {0}\n\n压缩包包含应用日志与系统信息，错误消息可能包含文件路径。分享前请先检查内容。诊断包不包含工程文件和图片，程序也不会自动上传。"
+}

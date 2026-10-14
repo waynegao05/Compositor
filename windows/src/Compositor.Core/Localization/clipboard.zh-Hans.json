@@ -1,0 +1,11 @@
+{
+  "Could not copy to the system clipboard. The image is kept inside Compositor, and the cut can be undone. {0}": "无法写入系统剪贴板。图像副本已保留在 Compositor 内，剪切操作可以撤销。{0}",
+  "Could not copy to the system clipboard. The image is kept inside Compositor. {0}": "无法写入系统剪贴板。图像副本已保留在 Compositor 内。{0}",
+  "Finish text editing or close the open confirmation before pasting an image.": "请先结束文字编辑或关闭当前确认对话框，再粘贴图像。",
+  "Image paste was canceled because the editing context changed.": "编辑状态已改变，本次图像粘贴已取消。",
+  "The system clipboard contains no image. The previous internal copy was not pasted.": "系统剪贴板中没有图像，未粘贴此前保留的应用内副本。",
+  "Pasted {0} x {1} into a new unsaved project": "已将 {0} × {1} 图像粘贴到新的未保存工程中",
+  "Could not paste the system clipboard image: {0}": "无法粘贴系统剪贴板图像：{0}",
+  "The system clipboard copy was canceled while a confirmation is open. The internal copy is retained.": "当前有确认对话框，本次系统剪贴板复制已取消。应用内副本仍保留。",
+  "The system clipboard is unavailable.": "系统剪贴板当前不可用。"
+}

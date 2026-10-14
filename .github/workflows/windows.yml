@@ -1,42 +1,122 @@
-name: Windows port
+name: Windows build and portable package
 
-# The port in windows/ is .NET and Avalonia and cannot be built by this repository's own verify.yml, which is
-# Xcode's. This is the half that keeps it compiling and passing on its own, and it only runs when something
-# under windows/ has changed — a change to the Mac app cannot make it red.
+# The Windows port is .NET/Avalonia; the separate macOS workflow remains responsible for Xcode.
 on:
   push:
     paths:
       - "windows/**"
       - ".github/workflows/windows.yml"
+      - ".gitattributes"
+      - "LICENSE"
   pull_request:
     paths:
       - "windows/**"
       - ".github/workflows/windows.yml"
+      - ".gitattributes"
+      - "LICENSE"
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
-    runs-on: windows-latest
+    # GitHub's hosted Windows runner is Windows Server, not a Windows 11 desktop acceptance test.
+    runs-on: windows-2025
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: windows
+        shell: pwsh
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      AVALONIA_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "true"
+      COMPOSITOR_LANGUAGE: en
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "10.0.x"
+          global-json-file: windows/global.json
 
-      # Warnings are errors here: this port has been held at zero and a warning is what catches a name that
-      # resolved to the wrong member.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check localization resources
+        run: |
+          python ./scripts/check_localization.py
+          if ($LASTEXITCODE -ne 0) { throw 'Localization resource checks failed.' }
+          python -m unittest discover -s scripts/tests -v
+          if ($LASTEXITCODE -ne 0) { throw 'Localization scanner tests failed.' }
+
+      - name: Restore
+        run: dotnet restore Compositor.slnx --nologo
+
       - name: Build
-        run: dotnet build Compositor.slnx -warnaserror --nologo
+        run: dotnet build Compositor.slnx --configuration Release --no-restore -warnaserror --nologo -p:UsedAvaloniaProducts=
 
       - name: Test
-        run: dotnet test tests/Compositor.Core.Tests/Compositor.Core.Tests.csproj --nologo
+        run: >-
+          dotnet test tests/Compositor.Core.Tests/Compositor.Core.Tests.csproj
+          --configuration Release --no-build --no-restore --nologo
+          --logger "trx;LogFileName=core-tests.trx"
+          --results-directory ../dist/windows/test-results
 
-      # The window, driven with a pointer. It runs on Avalonia's headless platform, so it needs no display and
-      # nothing has to be shown: it builds the real window, clicks it, and fails with a non-zero exit code if
-      # anything it asserts does not hold.
-      - name: Drive the window with a pointer
-        run: dotnet run --project src/Compositor.Desktop/Compositor.Desktop.csproj -- --clicks clicks.png
+      - name: Check English UI, persistence and system integration contracts
+        run: ./scripts/Test-Headless.ps1 -OutputDirectory dist/windows/checks/en
+
+      - name: Check Simplified Chinese UI and command contracts
+        env:
+          COMPOSITOR_LANGUAGE: zh-Hans
+        run: ./scripts/Test-Headless.ps1 -OutputDirectory dist/windows/checks/zh-Hans
+
+      - name: Generate and verify the Chinese acceptance sample
+        run: |
+          $samplePath = Join-Path $PWD '../dist/windows/acceptance-sample'
+          dotnet ./src/Compositor.Cli/bin/Release/net10.0/Compositor.Cli.dll sample $samplePath
+          if ($LASTEXITCODE -ne 0) { throw "Sample generation failed (exit code $LASTEXITCODE)." }
+          dotnet ./src/Compositor.Cli/bin/Release/net10.0/Compositor.Cli.dll verify-sample $samplePath
+          if ($LASTEXITCODE -ne 0) { throw "Sample verification failed (exit code $LASTEXITCODE)." }
+
+      - name: Package self-contained Windows x64 app
+        run: ./scripts/Publish-Windows.ps1
+
+      - name: Smoke-test the packaged app
+        run: |
+          Expand-Archive ../dist/windows/Compositor-Windows-win-x64.zip ../dist/windows/unpacked
+          $packageRoot = Join-Path $PWD '../dist/windows/unpacked/Compositor-Windows-win-x64'
+          & (Join-Path $packageRoot 'diagnostics/Test-Windows.ps1') `
+            -ApplicationPath (Join-Path $packageRoot 'Compositor.Desktop.exe') `
+            -OutputDirectory (Join-Path $PWD '../dist/windows/checks/packaged')
+          if ($LASTEXITCODE -ne 0) { throw "Packaged app checks failed (exit code $LASTEXITCODE)." }
+          dotnet ./src/Compositor.Cli/bin/Release/net10.0/Compositor.Cli.dll verify-sample (Join-Path $packageRoot 'samples/Chinese-Acceptance')
+          if ($LASTEXITCODE -ne 0) { throw "Packaged sample verification failed (exit code $LASTEXITCODE)." }
+
+      - name: Upload test results and headless screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-verification
+          path: |
+            dist/windows/test-results/**
+            dist/windows/checks/**
+            dist/windows/acceptance-sample/**
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Compositor-Windows-win-x64
+          path: |
+            dist/windows/Compositor-Windows-win-x64.zip
+            dist/windows/Compositor-Windows-win-x64.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

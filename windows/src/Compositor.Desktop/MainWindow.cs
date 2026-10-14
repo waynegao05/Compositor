@@ -24,7 +24,7 @@ namespace Compositor.Desktop;
 /// The editor window: the canvas, the layers panel and a status line. Projects are opened as folders,
 /// because on Windows a `.comp` is an ordinary directory rather than the file-like package the Mac sees.
 /// </summary>
-public sealed class MainWindow : Window
+public sealed partial class MainWindow : Window
 {
     /// <summary>The panels, the strip and the bar under the canvas: the Mac's editor background.</summary>
     private static readonly IBrush Panel = Skin.ChromeBrush;
@@ -74,8 +74,8 @@ public sealed class MainWindow : Window
     /// <summary>Select ▸ Colour Range while its panel is up: the colours picked and the selection they make.</summary>
     private ColorRangeSession? _colorRange;
     private ColorRangePanel? _colorRangePanel;
-    /// <summary>The selection there was before the panel opened, which a Cancel puts back.</summary>
-    private DocumentSelection? _colorRangeWas;
+    /// <summary>Finishes the panel against its original document and history, including tab switches.</summary>
+    private Action<bool>? _finishColorRange;
 
     /// <summary>The picker while the self check has it up, so the caller can photograph that window too — the
     /// picture of the editor does not hold a window of its own.</summary>
@@ -97,7 +97,7 @@ public sealed class MainWindow : Window
     /// <summary>The clipping, mask and visibility rows, whose names and availability follow the selection.</summary>
     private readonly MenuItem _visibility = new();
     private readonly MenuItem _showGrid = new();
-    private readonly MenuItem _recentMenu = new() { Header = "Open _Recent" };
+    private readonly MenuItem _recentMenu = new() { Header = L10n.T("Open _Recent") };
     private readonly RecentProjects _recent = new(RecentProjects.DefaultPath);
     private readonly MenuItem _snapToCanvas = new();
     private readonly MenuItem _snapToGuides = new();
@@ -146,17 +146,18 @@ public sealed class MainWindow : Window
 
     /// <summary>The blend modes in the order the menu lists them, which is the order the enum declares.</summary>
     private static readonly LayerBlendMode[] BlendModes = Enum.GetValues<LayerBlendMode>();
-    private readonly MenuItem _adjustmentMenu = new() { Header = "New _Adjustment Layer" };
-    private readonly MenuItem _effectsMenu = new() { Header = "Layer _Effects" };
+    private readonly MenuItem _adjustmentMenu = new() { Header = L10n.T("New _Adjustment Layer") };
+    private readonly MenuItem _effectsMenu = new() { Header = L10n.T("Layer _Effects") };
     private MenuItem _adjustmentSettings = new();
     private MenuItem _clearEffects = new();
     private readonly MenuItem _clipping = new();
-    private readonly MenuItem _addMask = new() { Header = "Add _Mask" };
+    private readonly MenuItem _addMask = new() { Header = L10n.T("Add _Mask") };
     private readonly MenuItem _maskToggle = new();
     private readonly MenuItem _maskLink = new();
 
     /// <summary>The rest of the Layer menu, so all of it can go dead together when nothing is selected.</summary>
     private readonly List<MenuItem> _layerItems = [];
+    private readonly List<MenuItem> _documentItems = [];
 
     /// <summary>
     /// The text being typed on the canvas, if any: it keeps the whole of the typing as one undo step, and
@@ -165,13 +166,13 @@ public sealed class MainWindow : Window
     private TextSession? _text;
 
     /// <summary>The Gradient tool's own rows in the Tools menu, which the options bar also shows.</summary>
-    private readonly MenuItem _gradientMenu = new() { Header = "Gradient _options" };
+    private readonly MenuItem _gradientMenu = new() { Header = L10n.T("Gradient _options") };
 
     /// <summary>The Shape tool's own rows in the Tools menu, which the options bar also shows.</summary>
-    private readonly MenuItem _shapeKinds = new() { Header = "Shape _kind" };
+    private readonly MenuItem _shapeKinds = new() { Header = L10n.T("Shape _kind") };
 
     /// <summary>The crop frame's shape: the canvas's own, or one of the fixed ratios.</summary>
-    private readonly MenuItem _cropRatios = new() { Header = "Crop _ratio" };
+    private readonly MenuItem _cropRatios = new() { Header = L10n.T("Crop _ratio") };
 
     /// <summary>The crop frame while the Crop tool is in hand; null is the whole canvas.</summary>
     private SKRectI? _cropFrame;
@@ -179,18 +180,19 @@ public sealed class MainWindow : Window
     /// <summary>The guide being pulled off a ruler, so the drag that follows moves that one rather than making a
     /// new one for every step of it.</summary>
     private Guid? _pulledGuide;
+    private Guid? _draggedGuide;
 
     /// <summary>Whether a brush stroke goes on the active layer's mask instead of its pixels.</summary>
     private readonly MenuItem _paintOnMask = new()
     {
-        Header = "Paint on the layer _mask",
+        Header = L10n.T("Paint on the layer _mask"),
         ToggleType = MenuItemToggleType.CheckBox,
     };
 
     /// <summary>Whether the brush paints or erases; on a mask, that is white or black.</summary>
     private readonly MenuItem _eraseToggle = new()
     {
-        Header = "Brush _erases",
+        Header = L10n.T("Brush _erases"),
         ToggleType = MenuItemToggleType.CheckBox,
     };
 
@@ -222,7 +224,7 @@ public sealed class MainWindow : Window
         public int SelectedRow { get; set; }
 
         /// <summary>What the tab is called: the project's name, or what it is until it is saved.</summary>
-        public string Name => Path is { } path ? System.IO.Path.GetFileName(path) : "Untitled";
+        public string Name => Path is { } path ? System.IO.Path.GetFileName(path) : L10n.T("Untitled");
     }
 
     private readonly List<Tab> _tabs = [];
@@ -262,6 +264,7 @@ public sealed class MainWindow : Window
     /// <summary>What the box was when the drag began, and where every layer it moves was.</summary>
     private LayerTransform? _transformBox;
     private Dictionary<Guid, LayerTransform> _transformOriginals = [];
+    private Dictionary<Guid, LayerTransform?> _transformMaskOriginals = [];
 
     /// <summary>What the tool in hand reads, which the options bar is a face on: the brush's settings, the
     /// selection's and the rest. One object holds them all so the bar can be built once.</summary>
@@ -296,9 +299,10 @@ public sealed class MainWindow : Window
         // The two calls a screen has to be asked for are made once the window is open, which is when there is a
         // screen to ask.
         Opened += (_, _) => FitToScreen();
+        Opened += (_, _) => AppDiagnostics.Record($"Editor window opened: scaling {RenderScaling:0.##}, size {Bounds.Width:0} x {Bounds.Height:0}.");
         // The picker is a window of its own and the app is left running until the last window closes, so it
         // goes with the editor rather than being left behind to hold the session open.
-        Closing += (_, _) => _picker?.Close();
+        Closing += OnWindowClosing;
         Background = Skin.ChromeBrush;
         // The window's plain labels (a heading, a readout) take their colour from here, as the Mac's do from
         // the appearance; controls that name their own text keep it.
@@ -323,9 +327,11 @@ public sealed class MainWindow : Window
         _rulerAcross.Grabbed = (axis, at) => GuideGrabbed(_rulerAcross, axis, at);
         _rulerAcross.Dragged = at => GuidePulled(_rulerAcross, at);
         _rulerAcross.LetGo = GuidePulledOff;
+        _rulerAcross.PointerCaptureLost += (_, _) => GuidePulledOff();
         _rulerDown.Grabbed = (axis, at) => GuideGrabbed(_rulerDown, axis, at);
         _rulerDown.Dragged = at => GuidePulled(_rulerDown, at);
         _rulerDown.LetGo = GuidePulledOff;
+        _rulerDown.PointerCaptureLost += (_, _) => GuidePulledOff();
         // The pixels inside a selection can be taken hold of and dragged, which is the Mac build's other way of
         // moving them besides Command with an arrow key.
         _canvas.PixelsGrabbed = PixelsTaken;
@@ -380,10 +386,10 @@ public sealed class MainWindow : Window
         _grid = _tools.Grid();
         _gridVisible = _tools.ShowGrid;
         _canvas.Grid = _gridVisible ? _grid : null;
-        _showGrid.Header = _gridVisible ? "_Hide Grid" : "Show _Grid";
+        _showGrid.Header = L10n.T(_gridVisible ? "_Hide Grid" : "Show _Grid");
         _showGrid.Click += (_, _) => ShowGrid();
         _rulersVisible = _tools.ShowRulers;
-        _showRulers.Header = "R_ulers";
+        _showRulers.Header = L10n.T("R_ulers");
         _showRulers.ToggleType = MenuItemToggleType.CheckBox;
         _showRulers.IsChecked = _rulersVisible;
         _showRulers.Click += (_, _) => ShowRulers();
@@ -403,7 +409,7 @@ public sealed class MainWindow : Window
         {
             // A tick box, so the four read as switches rather than as commands. They open where they were left,
             // as the Mac build's tool defaults do.
-            item.Header = label;
+            item.Header = L10n.T(label);
             item.ToggleType = MenuItemToggleType.CheckBox;
             item.IsChecked = _tools.SnapTo.HasFlag(flag);
             item.Click += (_, _) => ToggleSnapTo(flag, label);
@@ -413,7 +419,11 @@ public sealed class MainWindow : Window
         _maskLink.Click += (_, _) => ToggleMaskLink();
         _addMask.Items.Add(Command("_Reveal All (White)", () => AddMask(revealing: true)));
         _addMask.Items.Add(Command("_Hide All (Black)", () => AddMask(revealing: false)));
-        _layers.SelectionChanged += (_, _) => UpdateLayerMenu();
+        _layers.SelectionChanged += (_, _) =>
+        {
+            InvalidatePendingClipboardPaste();
+            UpdateLayerMenu();
+        };
         _tabs.Add(_open);
         Content = Layout();
         RefreshTabs();
@@ -430,6 +440,7 @@ public sealed class MainWindow : Window
         // it would either fire twice or fire on a key the table no longer holds. One handler, one table.
         AddHandler(KeyDownEvent, KeyPressed, RoutingStrategies.Tunnel);
         AddHandler(KeyUpEvent, KeyLetGo, RoutingStrategies.Tunnel);
+        InitializeExternalFiles();
         Say("File ▸ New Project… for a blank canvas, or File ▸ Open project folder… to load a .comp");
     }
 
@@ -441,12 +452,13 @@ public sealed class MainWindow : Window
             {
                 new MenuItem
                 {
-                    Header = "_File",
+                    Header = L10n.T("_File"),
                     Items =
                     {
                         Command("_New Project…", () => _ = NewProject(), "New Project"),
                         Command("_Open project folder…", OpenProject, "Open Project"),
                         _recentMenu,
+                        Command("Recover interrupted saves…", () => _ = RecoverInterruptedSaveAsync()),
                         Command("_Import image…", () => _ = ImportImage()),
                         Command("_Save", Save, "Save"),
                         Command("Save _As…", SaveAs, "Save As"),
@@ -460,7 +472,7 @@ public sealed class MainWindow : Window
                 },
                 new MenuItem
                 {
-                    Header = "_Edit",
+                    Header = L10n.T("_Edit"),
                     Items =
                     {
                         Command("_Undo", Undo, "Undo"),
@@ -484,11 +496,12 @@ public sealed class MainWindow : Window
                         Command("Flip Canvas _Vertical", () => Flip(horizontal: false, canvas: true)),
                         new Separator(),
                         Command("_Keyboard Shortcuts…", () => _ = KeyboardShortcuts()),
+                        LanguageMenu(),
                     },
                 },
                 new MenuItem
                 {
-                    Header = "_Layer",
+                    Header = L10n.T("_Layer"),
                     Items =
                     {
                         LayerCommand("_Duplicate Layer", DuplicateLayer, "Duplicate Layer"),
@@ -508,12 +521,11 @@ public sealed class MainWindow : Window
                         _addMask,
                         _maskToggle,
                         LayerCommand("_Delete Mask", DeleteMask, null, (_, layer) => layer.Mask is not null),
-                        LayerCommand("Edit _Text…", () => _ = EditText(), null, (_, layer) => layer.Text is not null),
+                        LayerCommand("Edit _Text…", () => _ = EditText(), null, (_, layer) => layer.LiveText is not null),
                         _maskLink,
                         new Separator(),
-                        LayerCommand("New Blank Layer", NewBlankLayer, "New Blank Layer"),
-                        LayerCommand("New F_older", NewFolder, null,
-                            (document, _) => document.Layers.Count < LayerPlacement.MaxLayers),
+                        DocumentCommand("New Blank Layer", NewBlankLayer, "New Blank Layer"),
+                        DocumentCommand("New F_older", NewFolder),
                         _adjustmentMenu,
                         _adjustmentSettings,
                         _effectsMenu,
@@ -523,7 +535,7 @@ public sealed class MainWindow : Window
                 },
                 new MenuItem
                 {
-                    Header = "_Image",
+                    Header = L10n.T("_Image"),
                     Items =
                     {
                         Command("_Hue/Saturation…", () => _ = ImageAdjustment(AdjustmentKind.HueSaturation),
@@ -531,7 +543,7 @@ public sealed class MainWindow : Window
                         Command("_Levels…", () => _ = ImageAdjustment(AdjustmentKind.Levels), "Levels"),
                         new MenuItem
                         {
-                            Header = "_Auto Levels",
+                            Header = L10n.T("_Auto Levels"),
                             Items =
                             {
                                 Command("Auto _Contrast", () => AutoLevels(LevelsAuto.Contrast)),
@@ -555,7 +567,7 @@ public sealed class MainWindow : Window
                 },
                 new MenuItem
                 {
-                    Header = "_Filter",
+                    Header = L10n.T("_Filter"),
                     Items =
                     {
                         Command("_Camera Raw Filter…", CameraRawFilter),
@@ -575,7 +587,7 @@ public sealed class MainWindow : Window
                 },
                 new MenuItem
                 {
-                    Header = "_Tools",
+                    Header = L10n.T("_Tools"),
                     Items =
                     {
                         ToolItem("_Pan (drag to scroll)", Tool.Pan, "Hand tool"),
@@ -609,7 +621,7 @@ public sealed class MainWindow : Window
                         new Separator(),
                         new MenuItem
                         {
-                            Header = "_Brush settings",
+                            Header = L10n.T("_Brush settings"),
                             Items =
                             {
                                 Command("_Size…", () => _ = SetBrush(BrushSetting.Size)),
@@ -626,7 +638,7 @@ public sealed class MainWindow : Window
                 },
                 new MenuItem
                 {
-                    Header = "_Select",
+                    Header = L10n.T("_Select"),
                     Items =
                     {
                         Command("Select _All", () => Change("Select All", SelectionEdits.SelectAll), "Select All"),
@@ -645,7 +657,7 @@ public sealed class MainWindow : Window
                 },
                 new MenuItem
                 {
-                    Header = "_View",
+                    Header = L10n.T("_View"),
                     Items =
                     {
                         Command("Zoom _in", () => { _canvas.ZoomBy(1.25); Say(); }, "Zoom In"),
@@ -672,10 +684,13 @@ public sealed class MainWindow : Window
                 },
                 new MenuItem
                 {
-                    Header = "_Help",
+                    Header = L10n.T("_Help"),
                     Items =
                     {
-                        Command("_Check for Updates…", () => _ = CheckForUpdates()),
+                        Command("Windows Version Info…", () => _ = CheckForUpdates()),
+                        new Separator(),
+                        Command("Export Diagnostics…", () => _ = ExportDiagnostics()),
+                        Command("Open Diagnostics Folder", () => _ = OpenDiagnosticsFolder()),
                     },
                 },
             },
@@ -684,7 +699,7 @@ public sealed class MainWindow : Window
         var layers = new DockPanel();
         layers.Children.Add(new TextBlock
         {
-            Text = "Layers",
+            Text = L10n.T("Layers"),
             Margin = new Thickness(10, 8, 10, 6),
             Foreground = Ink,
             FontWeight = FontWeight.SemiBold,
@@ -745,7 +760,7 @@ public sealed class MainWindow : Window
     private Control Toolbar()
     {
         var add = new Button { Content = "＋", Padding = new Thickness(8, 0, 8, 0) };
-        ToolTip.SetTip(add, "New canvas");
+        ToolTip.SetTip(add, L10n.T("New canvas"));
         add.Click += (_, _) => _ = NewProject();
         var zooms = new StackPanel
         {
@@ -776,8 +791,8 @@ public sealed class MainWindow : Window
     /// <summary>A button of the toolbar: the same command a View menu row is, with the status line refreshed.</summary>
     private Button ViewButton(string text, string hint, Action act)
     {
-        var button = new Button { Content = text, Padding = new Thickness(8, 2, 8, 2) };
-        ToolTip.SetTip(button, hint);
+        var button = new Button { Content = L10n.T(text), Padding = new Thickness(8, 2, 8, 2) };
+        ToolTip.SetTip(button, L10n.T(hint));
         button.Click += (_, _) =>
         {
             act();
@@ -822,12 +837,45 @@ public sealed class MainWindow : Window
     /// both the key the row shows and the key it answers to are read from that one name, so a row cannot come
     /// to show a key it does not fire on.
     /// </summary>
-    private MenuItem Command(string header, Action action, string? key = null)
+    private MenuItem Command(string header, Action action, string? key = null, bool translate = true)
     {
-        var item = new MenuItem { Header = header };
+        var item = new MenuItem { Header = translate ? L10n.T(header) : header };
         item.Click += (_, _) => action();
         ShowKey(item, key);
         return item;
+    }
+
+    private MenuItem LanguageMenu()
+    {
+        var menu = new MenuItem { Header = L10n.T("Language") };
+        var choices = new[]
+        {
+            (L10n.SystemLanguage, "Follow system"),
+            (L10n.SimplifiedChinese, "简体中文"),
+            (L10n.English, "English"),
+        };
+        foreach (var (language, label) in choices)
+        {
+            var item = new MenuItem
+            {
+                Header = L10n.T(label),
+                Tag = language,
+                ToggleType = MenuItemToggleType.Radio,
+                IsChecked = L10n.SelectedLanguage == language,
+            };
+            item.Click += async (_, _) =>
+            {
+                if (!L10n.SavePreference(language))
+                {
+                    await UpdateDialog.Ask(this, L10n.T("Language"), L10n.T("Could not save the language preference."));
+                    return;
+                }
+                foreach (var choice in menu.Items.OfType<MenuItem>()) choice.IsChecked = Equals(choice.Tag, language);
+                await UpdateDialog.Ask(this, L10n.T("Language"), L10n.T("Restart Compositor to apply the selected language."));
+            };
+            menu.Items.Add(item);
+        }
+        return menu;
     }
 
     /// <summary>A row of the Layer menu, remembered so it can be greyed out with the others.</summary>
@@ -837,6 +885,13 @@ public sealed class MainWindow : Window
         var item = Command(header, action, key);
         if (ready is null) _layerItems.Add(item);
         else _layerRows.Add((item, ready));
+        return item;
+    }
+
+    private MenuItem DocumentCommand(string header, Action action, string? key = null)
+    {
+        var item = Command(header, action, key);
+        _documentItems.Add(item);
         return item;
     }
 
@@ -923,7 +978,7 @@ public sealed class MainWindow : Window
         }
         if (unknown > 0)
         {
-            Say($"{unknown} shortcut rows name a key this build does not know, so they are not in force");
+            Say(L10n.F("{0} shortcut rows name a key this build does not know, so they are not in force", unknown));
         }
     }
 
@@ -942,19 +997,19 @@ public sealed class MainWindow : Window
     /// </summary>
     private bool Typing() => _canvas.TextEditing || TypingIn() is not null;
 
-    /// <summary>
-    /// Whether a text field keeps this key: the handful of combinations it edits its own text with. Everything
-    /// else with Ctrl or Alt is the window's whatever has the keyboard, so that Ctrl+S still saves with an
-    /// amount in hand — which is what the Mac build's menus do from a field as well.
-    /// </summary>
+    /// <summary>Text fields retain editing, deletion and navigation chords, including Shift variants.</summary>
     private static bool FieldKeepsIt(KeyEventArgs e) =>
-        e.KeyModifiers == KeyModifiers.Control && e.Key is Key.A or Key.C or Key.V or Key.X or Key.Z or Key.Y;
+        e.KeyModifiers.HasFlag(KeyModifiers.Control)
+        && e.Key is Key.A or Key.C or Key.V or Key.X or Key.Z or Key.Y
+            or Key.Delete or Key.Back or Key.Left or Key.Right or Key.Up or Key.Down or Key.Home or Key.End;
 
     /// <summary>A key pressed anywhere in the window: the table says what it does, if anything.</summary>
     private void KeyPressed(object? sender, KeyEventArgs e)
     {
+        if (_canvas.TextComposing && _canvas.IsFocused) return;
         // The Windows key is Windows', and a chord made with it is not one the table can hold.
         if (e.Handled || e.KeyModifiers.HasFlag(KeyModifiers.Meta)) return;
+        if (ProtectCanvasTextShortcut(e)) return;
         var held = ShortcutKeys.Held(e.KeyModifiers);
         if (Typing() && (held is ShortcutModifiers.None or ShortcutModifiers.Shift
             || TypingIn() is not null && FieldKeepsIt(e)))
@@ -966,6 +1021,7 @@ public sealed class MainWindow : Window
         // only the canvas takes it, which is where the Mac build's own nudges live.
         if (Arrows(chord) && !_canvas.IsFocused) return;
         if (!_byKey.TryGetValue(chord, out var id) || !_verbs.TryGetValue(id, out var verb)) return;
+        if (TypingIn() is not null && id != MenuKey("Save") && id != MenuKey("Save As")) return;
         LastDelivered = id;
         // Two digits in a row make one exact opacity, and anything else starts the count again.
         if (!_opacityRows.Contains(id)) _opacityTyped = "";
@@ -1114,11 +1170,12 @@ public sealed class MainWindow : Window
             return Edit("Move Selection", () => SelectionEdits.Move(document, dx, dy));
         }
         if (_tool != Tool.Move || Selected is not { } id) return false;
-        return Edit("Move Layer", () => LayerEdits.Move(document, id, dx, dy));
+        return Edit("Move Layer", () => LayerEdits.Move(document, SelectedLayers, dx, dy));
     }
 
     /// <summary>The pixels a drag is carrying, and how far it has taken them.</summary>
     private FloatingPixels? _moving;
+    private ImageLayer? _movingOriginal;
     private (int Dx, int Dy) _movedBy;
 
     /// <summary>
@@ -1130,14 +1187,18 @@ public sealed class MainWindow : Window
     {
         if (_document is not { } document || Selected is not { } id) return false;
         if (document.Selection.Path is not { } path || !path.Contains(at.X, at.Y)) return false;
+        if (!MayEditImage()) return false;
+        _movingOriginal = document.Layers.FirstOrDefault(layer => layer.ID == id)?.Clone();
+        _history.Begin("Move Pixels", document, id);
         if (SelectionEdits.LiftPixels(document, id) is not { } floating)
         {
+            _movingOriginal = null;
+            _history.End(document, id);
             Say("There is nothing inside the selection to move");
             return false;
         }
         _moving = floating;
         _movedBy = (0, 0);
-        _history.Begin("Move Pixels", document, id);
         _canvas.Floating = (floating, 0, 0);
         Say("Dragging the pixels inside the selection");
         return true;
@@ -1152,7 +1213,7 @@ public sealed class MainWindow : Window
         // The outline goes with them, so what is selected is what is being carried.
         document.Selection = moving.Origin.Translated(dx, dy);
         _canvas.InvalidateVisual();
-        Say($"Moving the pixels {dx}, {dy}");
+        Say(L10n.F("Moving the pixels {0}, {1}", dx, dy));
     }
 
     /// <summary>
@@ -1166,17 +1227,24 @@ public sealed class MainWindow : Window
         _canvas.Floating = null;
         if (_movedBy is (0, 0))
         {
-            SelectionEdits.DropPixels(document, moving);
+            if (_movingOriginal is { } original)
+            {
+                var index = document.Layers.FindIndex(layer => layer.ID == original.ID);
+                if (index >= 0) document.Layers[index] = original;
+                document.Selection = moving.Origin;
+            }
+            moving.Dispose();
         }
         else
         {
             SelectionEdits.SettlePixels(document, moving, _movedBy.Dx, _movedBy.Dy);
         }
+        _movingOriginal = null;
         var moved = _movedBy;
         _movedBy = (0, 0);
         _history.End(document, Selected);
         Refresh();
-        if (moved is not (0, 0)) Say($"Pixels moved {moved.Dx}, {moved.Dy}");
+        if (moved is not (0, 0)) Say(L10n.F("Pixels moved {0}, {1}", moved.Dx, moved.Dy));
     }
 
     /// <summary>
@@ -1195,10 +1263,11 @@ public sealed class MainWindow : Window
     {
         if (_document is not { } document || Selected is not { } id) return false;
         if (document.Layers.FirstOrDefault(layer => layer.ID == id) is not { } layer) return false;
+        if (layer.IsGroup) return false;
         var at = Array.IndexOf(BlendModes, layer.BlendMode);
         var next = BlendModes[((at + step) % BlendModes.Length + BlendModes.Length) % BlendModes.Length];
         Edit("Blend Mode", () => LayerEdits.SetBlendMode(document, id, next));
-        Say($"Blend mode: {Spell(next)}");
+        Say(L10n.F("Blend mode: {0}", L10n.T(Spell(next))));
         return true;
     }
 
@@ -1208,7 +1277,7 @@ public sealed class MainWindow : Window
         var kinds = Enum.GetValues<ShapeKind>();
         var at = Array.IndexOf(kinds, _options.Shape);
         SetShapeKind(kinds[(at + 1) % kinds.Length]);
-        Say($"Shape: {_options.Shape}");
+        Say(L10n.F("Shape: {0}", L10n.T(_options.Shape.ToString())));
         return true;
     }
 
@@ -1225,7 +1294,7 @@ public sealed class MainWindow : Window
             : Math.Min(current - 1, Math.Round(current / 1.2));
         _options.Brush = _options.Brush with { Diameter = Math.Clamp(stepped, 1, 2000) };
         OptionsChanged();
-        Say($"Brush: {_options.Brush.Diameter:0} pixels");
+        Say(L10n.F("Brush: {0:0} pixels", _options.Brush.Diameter));
         return true;
     }
 
@@ -1237,7 +1306,7 @@ public sealed class MainWindow : Window
         var step = increase ? Math.Floor(quarter + 0.001) + 1 : Math.Ceiling(quarter - 0.001) - 1;
         _options.Brush = _options.Brush with { Hardness = Math.Clamp(step, 0, 4) / 4 };
         OptionsChanged();
-        Say($"Brush: {_options.Brush.Hardness * 100:0}% hard");
+        Say(L10n.F("Brush: {0:0}% hard", _options.Brush.Hardness * 100));
         return true;
     }
 
@@ -1252,7 +1321,7 @@ public sealed class MainWindow : Window
         if (_opacityTyped.Length == 2) percent = int.Parse(_opacityTyped);
         _options.Brush = _options.Brush with { Opacity = percent / 100.0 };
         OptionsChanged();
-        Say($"Brush opacity {_options.Brush.Opacity * 100:0}%");
+        Say(L10n.F("Brush opacity {0:0}%", _options.Brush.Opacity * 100));
     }
 
     /// <summary>
@@ -1274,12 +1343,19 @@ public sealed class MainWindow : Window
     private async Task KeyboardShortcuts()
     {
         if (await ShortcutDialog.Show(this, _shortcutSettings.Overrides) is not { } chosen) return;
+        var previous = _shortcutSettings.Overrides;
         _shortcutSettings.Overrides = chosen;
-        _shortcutSettings.Save(ShortcutDefaults.DefaultPath);
+        if (!_shortcutSettings.Save(ShortcutDefaults.DefaultPath, out var error))
+        {
+            _shortcutSettings.Overrides = previous;
+            await UpdateDialog.Ask(this, L10n.T("Keyboard Shortcuts"),
+                L10n.F("Could not save keyboard shortcuts: {0}", error ?? ""));
+            return;
+        }
         ShowKeys();
         Say(chosen.Count == 0
             ? "Keyboard shortcuts back to their defaults"
-            : $"{chosen.Count} keyboard shortcut{(chosen.Count == 1 ? "" : "s")} changed");
+            : L10n.F("{0} keyboard shortcuts changed", chosen.Count));
     }
 
     private async void OpenProject()
@@ -1288,15 +1364,16 @@ public sealed class MainWindow : Window
         {
             var picked = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
             {
-                Title = "Open a Compositor project folder",
+                Title = L10n.T("Open a Compositor project folder"),
                 AllowMultiple = false,
             });
             if (picked.Count == 0 || picked[0].TryGetLocalPath() is not { } path) return;
-            Open(path);
+            await OpenProjectPathAsync(path);
         }
         catch (Exception error)
         {
-            Say($"Could not open: {error.Message}");
+            AppDiagnostics.Report("Open project", error);
+            Say(L10n.F("Could not open: {0}", OperationErrors.Describe(error)));
         }
     }
 
@@ -1314,8 +1391,7 @@ public sealed class MainWindow : Window
         _history.Reset();
         NoteRecent(path);
         Show(_open);
-        Say($"{System.IO.Path.GetFileName(path)} — {_document.Width} by {_document.Height}, " +
-            $"{_document.Layers.Count} layers, {_document.Resolution:0} pixels per inch");
+        Say(L10n.F("{0} — {1} by {2}, {3} layers, {4:0} pixels per inch", System.IO.Path.GetFileName(path), _document.Width, _document.Height, _document.Layers.Count, _document.Resolution));
     }
 
     /// <summary>
@@ -1364,7 +1440,7 @@ public sealed class MainWindow : Window
         if (_tabs.Count != 1) throw new InvalidOperationException("closing the last tab left nothing to work in");
         if (_document is not null) throw new InvalidOperationException("the last tab still holds a document");
         if (_rows.Count != 0) throw new InvalidOperationException("the panel still holds rows with nothing open");
-        if (_open.Name != "Untitled") throw new InvalidOperationException("the tab left behind is not a fresh one");
+        if (_open.Name != L10n.T("Untitled")) throw new InvalidOperationException("the tab left behind is not a fresh one");
         return string.Join(Environment.NewLine, report);
     }
 
@@ -1748,6 +1824,7 @@ public sealed class MainWindow : Window
         {
             Open(project);
         if (_document is not { } document) throw new InvalidOperationException("the project did not open");
+        UpdateLayout();
         _canvas.Fit();
         report.Add($"open {System.IO.Path.GetFileName(project)}: {document.Width}x{document.Height} "
             + $"at {_canvas.Zoom * 100:0}%");
@@ -1758,8 +1835,11 @@ public sealed class MainWindow : Window
             ?? throw new InvalidOperationException("the canvas is not in the window");
         Point Aim(SKPoint at)
         {
-            var placed = _canvas.InView(at);
-            return new Point(corner.X + placed.X, corner.Y + placed.Y);
+            // Tools rebuild the options bar, and showing rulers moves the canvas. Complete that layout
+            // before aiming, then use its current position rather than the one at the start of the check.
+            UpdateLayout();
+            return _canvas.TranslatePoint(_canvas.InView(at), this)
+                ?? throw new InvalidOperationException("the canvas is not in the window");
         }
         report.Add($"the canvas sits at {corner.X:0},{corner.Y:0} in the window, "
             + $"{_canvas.Bounds.Width:0}x{_canvas.Bounds.Height:0} of it");
@@ -1871,6 +1951,13 @@ public sealed class MainWindow : Window
         // A guide pulled off a ruler: a press on the strip, dragged onto the canvas. The ruler across the top
         // makes a horizontal guide, positioned by the Y it is let go at.
         SetTool(Tool.Pan);
+        // Hidden guides cannot be grabbed, and a fresh profile hides them by default. Set the test's view
+        // prerequisites explicitly without persisting a change to the person's preferences.
+        _guidesVisible = true;
+        _guidesLocked = false;
+        _showGuides.IsChecked = true;
+        _lockGuides.IsChecked = false;
+        PushViewSwitches();
         if (!_rulersVisible)
         {
             // Turned on directly rather than through the View menu, so that a check does not write the view's
@@ -1881,8 +1968,8 @@ public sealed class MainWindow : Window
             _rulerDown.IsVisible = true;
             _rulerCorner.IsVisible = true;
             UpdateRulers();
-            UpdateLayout();
         }
+        UpdateLayout();
         if (_rulerAcross.TranslatePoint(new Point(0, 0), this) is { } strip)
         {
             var grab = new Point(strip.X + _canvas.InView(new SKPoint(60, 0)).X, strip.Y + RulerThickness / 2);
@@ -1899,10 +1986,16 @@ public sealed class MainWindow : Window
 
         // The same guide dragged along the canvas with the Move tool, which is how an existing one is moved.
         SetTool(Tool.Move);
-        Drag(Aim(new SKPoint(60, 110)), Aim(new SKPoint(60, 40)));
+        var guideToMove = document.Guides.Single();
+        var guideWas = guideToMove.Position;
+        Drag(Aim(new SKPoint(60, (float)guideWas)), Aim(new SKPoint(60, 40)));
         var moved = document.Guides[0].Position;
-        report.Add($"the guide dragged along the canvas: 110 → {moved:0.#}");
+        report.Add($"the guide dragged along the canvas: {guideWas:0.#} → {moved:0.#}");
         if (Math.Abs(moved - 40) > 3) throw new InvalidOperationException($"the guide ended at {moved:0.#}, not 40");
+        if (document.Guides.Count != 1 || document.Guides[0].ID != guideToMove.ID || _history.UndoName != "Move Guide")
+        {
+            throw new InvalidOperationException("the drag did not move the same guide in one Move Guide step");
+        }
 
         // The Type tool's caret: a click where the words go, then the words, and the layer carries them.
         SetTool(Tool.Type);
@@ -2227,15 +2320,15 @@ public sealed class MainWindow : Window
         {
             throw new InvalidOperationException("the Dither panel has no list of looks");
         }
-        var halftone = look.Items.Cast<object>().ToList().FindIndex(item => LabelOf(item) == "Halftone Dots");
+        var halftone = look.Items.Cast<object>().ToList().FindIndex(item => LabelOf(item) == L10n.T("Halftone Dots"));
         if (halftone < 0) throw new InvalidOperationException("the Dither panel has no Halftone Dots look");
         look.SelectedIndex = halftone;
         // Two Colors is the choice whose ink and paper are the panel's own, so it is the one that shows the
         // two swatches; the ink is then chosen through the picker, as the Mac's panel does it.
         var inkAndPaper = ditherPanel.GetVisualDescendants().OfType<ComboBox>()
-            .FirstOrDefault(box => box.Items.Cast<object>().Any(item => LabelOf(item) == "Two Colors"))
+            .FirstOrDefault(box => box.Items.Cast<object>().Any(item => LabelOf(item) == L10n.T("Two Colors")))
             ?? throw new InvalidOperationException("the Dither panel has no Ink and paper list");
-        inkAndPaper.SelectedIndex = inkAndPaper.Items.Cast<object>().ToList().FindIndex(item => LabelOf(item) == "Two Colors");
+        inkAndPaper.SelectedIndex = inkAndPaper.Items.Cast<object>().ToList().FindIndex(item => LabelOf(item) == L10n.T("Two Colors"));
         Dispatcher.UIThread.RunJobs();
         if (ditherPanel.GetVisualDescendants().OfType<ColorSwatch>().FirstOrDefault() is not { } ink)
         {
@@ -2544,7 +2637,7 @@ public sealed class MainWindow : Window
     private static Slider AmountIn(Window dialog, string label)
     {
         var row = dialog.GetVisualDescendants().OfType<StackPanel>().FirstOrDefault(candidate =>
-            candidate.Children.OfType<TextBlock>().Any(text => text.Text == label)
+            candidate.Children.OfType<TextBlock>().Any(text => text.Text == L10n.T(label))
             && candidate.Children.OfType<Slider>().Any());
         return row?.Children.OfType<Slider>().FirstOrDefault()
             ?? throw new InvalidOperationException($"the dialog has no amount called {label}");
@@ -2554,7 +2647,7 @@ public sealed class MainWindow : Window
     private static void PressIn(Window dialog, string label)
     {
         var button = dialog.GetVisualDescendants().OfType<Button>()
-            .FirstOrDefault(candidate => (candidate.Content as string) == label)
+            .FirstOrDefault(candidate => (candidate.Content as string) == L10n.T(label))
             ?? throw new InvalidOperationException($"the dialog has no button called {label}");
         Press(dialog, At(dialog, button, 0.5));
     }
@@ -2637,6 +2730,12 @@ public sealed class MainWindow : Window
 
         // The blend list is offered in groups with a rule between them, so an item is not the mode at its
         // index: what each item stands for is what has to reach the layer, rules and all.
+        var visible = document.EffectiveVisibleIDs();
+        var blendLayer = document.Layers.FirstOrDefault(layer =>
+            !layer.IsGroup && layer.Asset is not null && visible.Contains(layer.ID))
+            ?? throw new InvalidOperationException("the fixture has no visible image layer to blend");
+        Reselect(blendLayer.ID);
+        if (!_blend.IsEnabled) throw new InvalidOperationException("the image layer's blend list is disabled");
         var rules = _blendRows.Count(row => row is null);
         if (rules != LayerEdits.BlendGroups.Length - 1)
         {
@@ -2689,6 +2788,7 @@ public sealed class MainWindow : Window
     /// </summary>
     private Tab TabForNew()
     {
+        FinishActiveEdits();
         if (_open.Document is not null)
         {
             var made = new Tab();
@@ -2701,19 +2801,19 @@ public sealed class MainWindow : Window
     /// <summary>
     /// The tab brought in front: the canvas and the panel are given what it holds, and its folder is watched
     /// again. Whatever was half-done in the tab being left — a preview, a draft outline, a drag, a typing
-    /// session — belongs to that tab, so it is let go rather than carried over.
+    /// session — belongs to that tab. Text is committed before the next document comes in front.
     /// </summary>
     private void Bring(Tab tab)
     {
         if (!ReferenceEquals(tab, _open))
         {
+            FinishActiveEdits();
             _open.SelectedRow = _layers.SelectedIndex;
-            StopPreview();
             _canvas.CancelDraft();
-            if (_text is not null) CancelText();
             _transforming = null;
             _transformBox = null;
             _transformOriginals.Clear();
+            _transformMaskOriginals.Clear();
             _cropFrame = null;
             _open = tab;
         }
@@ -2725,6 +2825,7 @@ public sealed class MainWindow : Window
     {
         // The Camera Raw panel belongs to the tab it was opened on, so a tab coming in front lets it go: every
         // way the front tab comes to change runs through here.
+        CloseColorRange();
         CloseCameraRaw();
         _canvas.Document = tab.Document;
         if (tab.Document is not null)
@@ -2755,25 +2856,39 @@ public sealed class MainWindow : Window
     /// </summary>
     private async Task CloseTab(Tab tab)
     {
-        if (!await MayReplace(tab)) return;
-        var at = _tabs.IndexOf(tab);
-        if (at < 0) return;
-        var wasOpen = ReferenceEquals(tab, _open);
-        _tabs.RemoveAt(at);
-        if (_tabs.Count == 0) _tabs.Add(new Tab());
-        tab.Document?.Dispose();
-        var next = _tabs[Math.Min(at, _tabs.Count - 1)];
-        if (wasOpen)
+        if (_windowClosePending || !_tabClosePending.Add(tab)) return;
+        try
         {
-            // Nothing is kept from a tab that has just been closed.
-            _open = next;
-            Show(next);
+            if (ReferenceEquals(tab, _open)) FinishActiveEdits();
+            if (!await MayReplace(tab)) return;
+            var at = _tabs.IndexOf(tab);
+            if (at < 0) return;
+            var wasOpen = ReferenceEquals(tab, _open);
+            _tabs.RemoveAt(at);
+            if (_tabs.Count == 0) _tabs.Add(new Tab());
+            tab.Document?.Dispose();
+            var next = _tabs[Math.Min(at, _tabs.Count - 1)];
+            if (wasOpen)
+            {
+                // Nothing is kept from a tab that has just been closed.
+                _open = next;
+                Show(next);
+            }
+            else
+            {
+                RefreshTabs();
+            }
+            Say(L10n.F("{0} closed", tab.Name));
         }
-        else
+        catch (Exception error)
         {
-            RefreshTabs();
+            AppDiagnostics.Report("Closing project tab", error);
+            Say(L10n.F("Could not close the project: {0}", OperationErrors.Describe(error)));
         }
-        Say($"{tab.Name} closed");
+        finally
+        {
+            _tabClosePending.Remove(tab);
+        }
     }
 
     /// <summary>The tab strip: a button a tab, the one in front marked, and a way to start another.</summary>
@@ -2831,7 +2946,7 @@ public sealed class MainWindow : Window
         _history.Reset();
         Show(_open);
         if (_document.Layers.Count > 0) Reselect(_document.Layers[^1].ID);
-        Say($"New {_document.Width} by {_document.Height} canvas at {_document.Resolution:0.##} per inch, not saved yet");
+        Say(L10n.F("New {0} by {1} canvas at {2:0.##} per inch, not saved yet", _document.Width, _document.Height, _document.Resolution));
     }
 
     /// <summary>
@@ -2841,12 +2956,19 @@ public sealed class MainWindow : Window
     private async Task<bool> MayReplace(Tab? tab = null)
     {
         var which = tab ?? _open;
-        if (which.Document is null || !which.History.IsModified) return true;
-        var named = which.Path is { } path
-            ? $"{System.IO.Path.GetFileName(path)} has been changed since it was last saved."
-            : "This project has not been saved.";
-        return await ConfirmDialog.Ask(this, "Discard unsaved changes?",
-            $"{named} Anything not saved is lost.", "Discard", "Keep");
+        if (ReferenceEquals(which, _open)) FinishActiveEdits();
+        while (_tabs.Contains(which) && NeedsCloseConfirmation(which))
+        {
+            var before = (which.Document, which.History.CurrentRevision, which.Path);
+            var named = which.Path is { } path
+                ? L10n.F("{0} has been changed since it was last saved.", System.IO.Path.GetFileName(path))
+                : L10n.T("This project has not been saved.");
+            if (!await ConfirmDialog.Ask(this, "Discard unsaved changes?",
+                L10n.F("{0} Anything not saved is lost.", named), "Discard", "Keep")) return false;
+            if (ReferenceEquals(which, _open)) FinishActiveEdits();
+            if (before == (which.Document, which.History.CurrentRevision, which.Path)) return true;
+        }
+        return _tabs.Contains(which);
     }
 
     /// <summary>The layer the panel has selected, or the top one when nothing is: what an edit acts on.</summary>
@@ -2873,28 +2995,30 @@ public sealed class MainWindow : Window
     /// <summary>One edit, wrapped in the history so it undoes in a single step. False when it changed nothing.</summary>
     private bool Edit(string name, Func<bool> change)
     {
-        if (_document is not { } document) return false;
+        if (!MayEditImage() || _document is not { } document) return false;
         _history.Begin(name, document, Selected);
-        var changed = change();
-        _history.End(document, Selected);
-        Refresh();
-        return changed;
+        try { return change(); }
+        finally
+        {
+            _history.End(document, Selected);
+            Refresh();
+        }
     }
 
     private void Undo()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document || _history.Undo() is not { } snapshot || snapshot.Document is null) return;
         document.Adopt(snapshot.Document);
-        ShowLayers(document);
-        Refresh();
+        Reselect(snapshot.ActiveLayerID);
     }
 
     private void Redo()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document || _history.Redo() is not { } snapshot || snapshot.Document is null) return;
         document.Adopt(snapshot.Document);
-        ShowLayers(document);
-        Refresh();
+        Reselect(snapshot.ActiveLayerID);
     }
 
     /// <summary>
@@ -2935,21 +3059,15 @@ public sealed class MainWindow : Window
             }
             Edit("Opacity", ApplyOpacity);
         };
-        _opacity.PointerPressed += (_, _) =>
+        _opacity.PointerPressed += (_, args) =>
         {
-            if (_document is not { } document || Selected is not { } id) return;
+            if (_opacityDragging || !args.GetCurrentPoint(_opacity).Properties.IsLeftButtonPressed
+                || !MayEditImage() || _document is not { } document || Selected is null) return;
             _opacityDragging = true;
             _history.Begin("Opacity", document, Selected);
         };
-        _opacity.PointerReleased += (_, _) =>
-        {
-            if (!_opacityDragging) return;
-            _opacityDragging = false;
-            if (_document is not { } document) return;
-            ApplyOpacity();
-            _history.End(document, Selected);
-            Refresh();
-        };
+        _opacity.PointerReleased += (_, _) => FinishOpacityEdit();
+        _opacity.PointerCaptureLost += (_, _) => FinishOpacityEdit();
 
         return new StackPanel
         {
@@ -2964,7 +3082,7 @@ public sealed class MainWindow : Window
                     Spacing = 6,
                     Children =
                     {
-                        new TextBlock { Text = "Opacity", Width = 52, VerticalAlignment = VerticalAlignment.Center },
+                        new TextBlock { Text = L10n.T("Opacity"), Width = 52, VerticalAlignment = VerticalAlignment.Center },
                         _opacity,
                         _opacityReadout,
                     },
@@ -2989,7 +3107,8 @@ public sealed class MainWindow : Window
             _blend.SelectedIndex = layer is null ? -1 : _blendRows.IndexOf(layer.BlendMode);
             _opacity.Value = (layer?.Opacity ?? 1) * 100;
             _opacityReadout.Text = $"{_opacity.Value:0}%";
-            _blend.IsEnabled = _opacity.IsEnabled = layer is not null;
+            _blend.IsEnabled = layer is { IsGroup: false };
+            _opacity.IsEnabled = layer is not null;
         }
         finally
         {
@@ -3004,23 +3123,25 @@ public sealed class MainWindow : Window
             ? document.Layers.FirstOrDefault(candidate => candidate.ID == id)
             : null;
         foreach (var item in _layerItems) item.IsEnabled = layer is not null;
+        foreach (var item in _documentItems)
+            item.IsEnabled = document is not null && document.Layers.Count < LayerPlacement.MaxLayers;
         foreach (var (item, ready) in _layerRows)
         {
             item.IsEnabled = document is not null && layer is not null && ready(document, layer);
         }
 
         var plan = document is not null && layer is not null ? LayerMerge.Plan(document, SelectedLayers, layer.ID) : null;
-        _merge.Header = "_" + (plan?.Action ?? "Merge Down");
+        _merge.Header = L10n.T(plan?.Action ?? "Merge Down");
         _merge.IsEnabled = plan is not null;
-        _visibility.Header = layer?.IsVisible == false ? "_Show Layer" : "_Hide Layer";
+        _visibility.Header = L10n.T(layer?.IsVisible == false ? "_Show Layer" : "_Hide Layer");
         _visibility.IsEnabled = layer is not null;
         ShowAppearance(layer);
-        _clipping.Header = layer?.MaskSourceID is not null ? "Release _Clipping Mask" : "Create _Clipping Mask";
+        _clipping.Header = L10n.T(layer?.MaskSourceID is not null ? "Release _Clipping Mask" : "Create _Clipping Mask");
         _clipping.IsEnabled = document is not null && layer is not null && LayerMaskEdits.CanToggle(document, layer.ID);
         _addMask.IsEnabled = layer is { Mask: null };
-        _maskToggle.Header = layer?.Mask?.IsEnabled == false ? "_Enable Mask" : "_Disable Mask";
+        _maskToggle.Header = L10n.T(layer?.Mask?.IsEnabled == false ? "_Enable Mask" : "_Disable Mask");
         _maskToggle.IsEnabled = layer?.Mask is not null;
-        _maskLink.Header = layer?.Mask?.IsLinked == false ? "Li_nk Mask" : "Un_ink Mask";
+        _maskLink.Header = L10n.T(layer?.Mask?.IsLinked == false ? "Li_nk Mask" : "Un_ink Mask");
         _maskLink.IsEnabled = layer is { IsGroup: false, Mask: not null };
     }
 
@@ -3037,10 +3158,11 @@ public sealed class MainWindow : Window
     /// <summary>Inserts a copy of the selected layer just above it, and selects the copy.</summary>
     private void DuplicateLayer()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document || Selected is not { } id) return;
         _history.Begin("Duplicate Layer", document, id);
         var copy = LayerEdits.Duplicate(document, id);
-        _history.End(document, id);
+        _history.End(document, copy ?? id);
         if (copy is null)
         {
             Say("That layer could not be copied: there is no room for another 10,000 layers.");
@@ -3055,6 +3177,7 @@ public sealed class MainWindow : Window
     /// </summary>
     private void DeleteLayer()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document) return;
         var ids = SelectedLayers;
         if (ids.Count == 0) return;
@@ -3063,20 +3186,21 @@ public sealed class MainWindow : Window
         var anchor = Selected ?? ids[0];
         var index = document.Layers.FindIndex(layer => layer.ID == anchor);
         _history.Begin(ids.Count > 1 ? "Delete Layers" : "Delete Layer", document, anchor);
-        var refused = 0;
-        foreach (var id in ids) if (!LayerEdits.Delete(document, id)) refused++;
-        _history.End(document, anchor);
-        if (refused > 0)
+        var deleted = LayerEdits.Delete(document, ids);
+        var left = document.Layers;
+        var next = deleted ? left.Count == 0 ? (Guid?)null : left[Math.Clamp(index, 0, left.Count - 1)].ID : anchor;
+        _history.End(document, next);
+        if (!deleted)
         {
             Say("A layer that stayed is clipped to one that went; macOS offers to bake or unlink it and this build cannot yet");
+            return;
         }
-        if (refused == ids.Count) return;
-        var left = document.Layers;
-        Reselect(left.Count == 0 ? null : left[Math.Clamp(index, 0, left.Count - 1)].ID);
+        Reselect(next);
     }
 
     private async Task RenameLayer()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document || Selected is not { } id) return;
         if (document.Layers.FirstOrDefault(layer => layer.ID == id) is not { } layer) return;
         if (await TextPrompt.Ask(this, "Rename Layer", "Layer name", layer.Name) is not { } name) return;
@@ -3112,20 +3236,22 @@ public sealed class MainWindow : Window
     /// <summary>Adds a layer with no pixels, which it gets on the first paint.</summary>
     private void NewBlankLayer()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document) return;
         _history.Begin("New Blank Layer", document, Selected);
         var made = LayerPlacement.AddBlank(document, Selected);
-        _history.End(document, Selected);
+        _history.End(document, made ?? Selected);
         if (made is null) { Say("This document already holds as many layers as it may."); return; }
         Reselect(made);
     }
 
     private void NewFolder()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document) return;
         _history.Begin("New Folder", document, Selected);
         var made = LayerPlacement.AddFolder(document, Selected);
-        _history.End(document, Selected);
+        _history.End(document, made ?? Selected);
         if (made is null) { Say("This document already holds as many layers as it may."); return; }
         Reselect(made);
     }
@@ -3133,12 +3259,13 @@ public sealed class MainWindow : Window
     /// <summary>Wraps the selected layer in a folder.</summary>
     private void GroupSelected()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document) return;
         var ids = SelectedLayers;
         if (ids.Count == 0) return;
         _history.Begin("Group Layers", document, Selected);
         var folder = LayerPlacement.GroupSelected(document, ids);
-        _history.End(document, Selected);
+        _history.End(document, folder ?? Selected);
         if (folder is null) { Say("Those layers could not be wrapped in a folder."); return; }
         Reselect(folder);
     }
@@ -3198,16 +3325,17 @@ public sealed class MainWindow : Window
     /// </summary>
     private void MergeLayers()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document) return;
         var ids = SelectedLayers;
         if (ids.Count == 0 || Selected is not { } id) return;
         if (LayerMerge.Plan(document, ids, id) is not { } plan) return;
         _history.Begin(plan.Action, document, id);
         var made = LayerMerge.Merge(document, ids, id);
-        _history.End(document, id);
+        _history.End(document, made ?? id);
         if (made is not { } merged)
         {
-            Say("Nothing to merge");
+            Say("Those layers cannot be merged while preserving their appearance and hierarchy.");
             return;
         }
         Reselect(merged);
@@ -3234,7 +3362,7 @@ public sealed class MainWindow : Window
     {
         var item = new MenuItem
         {
-            Header = header,
+            Header = L10n.T(header),
             ToggleType = MenuItemToggleType.CheckBox,
             IsChecked = tool == Tool.Pan,
         };
@@ -3246,6 +3374,11 @@ public sealed class MainWindow : Window
 
     private void SetTool(Tool tool)
     {
+        if (_tool != tool)
+        {
+            InvalidatePendingClipboardPaste();
+            _canvas.FinishInteraction();
+        }
         _tool = tool;
         _canvas.SampleSourceOnClick = tool == Tool.Clone;
         // A colour range being picked takes the press whatever tool is in hand, so the canvas keeps sampling
@@ -3290,19 +3423,19 @@ public sealed class MainWindow : Window
         RefreshOptionsBar();
         Say(tool switch
         {
-            Tool.Brush => $"Brush: {_options.Brush.Diameter:0} pixels, {Spell(_options.Brush)} — drag on the canvas",
+            Tool.Brush => L10n.F("Brush: {0:0} pixels, {1} — drag on the canvas", _options.Brush.Diameter, Spell(_options.Brush)),
             Tool.Clone => _cloneSource is null
                 ? "Clone stamp — Alt-click where it should copy from first"
-                : $"Clone stamp copying from {_cloneSource.Value.X:0},{_cloneSource.Value.Y:0} — drag on the canvas",
-            Tool.Blur => $"Blur brush: {_options.Brush.Diameter:0} pixels — drag over what should soften",
-            Tool.Liquify => $"Liquify brush: {_options.Brush.Diameter:0} pixels — drag the pixels where they should go",
-            Tool.Smudge => $"Smudge brush: {_options.Brush.Diameter:0} pixels — drag the color along",
-            Tool.Heal => $"Spot healing ({_options.Brush.Healing}): {_options.Brush.Diameter:0} pixels — drag over what should go",
+                : L10n.F("Clone stamp copying from {0:0},{1:0} — drag on the canvas", _cloneSource.Value.X, _cloneSource.Value.Y),
+            Tool.Blur => L10n.F("Blur brush: {0:0} pixels — drag over what should soften", _options.Brush.Diameter),
+            Tool.Liquify => L10n.F("Liquify brush: {0:0} pixels — drag the pixels where they should go", _options.Brush.Diameter),
+            Tool.Smudge => L10n.F("Smudge brush: {0:0} pixels — drag the color along", _options.Brush.Diameter),
+            Tool.Heal => L10n.F("Spot healing ({0}): {1:0} pixels — drag over what should go", L10n.T(_options.Brush.Healing.ToString()), _options.Brush.Diameter),
             Tool.Eyedropper => "Eyedropper — click the canvas to take its color",
             Tool.Type => "Type — click where the text goes, then type it",
             Tool.Crop => "Crop — drag a frame, Alt to grow it from the middle, then Crop ▸ Apply",
-            Tool.Shape => $"Shape ({_options.Shape}) — drag it out; Shift squares it, Alt grows it from the middle",
-            Tool.Gradient => $"Gradient ({_options.Gradient}, {(_options.GradientToBackground ? "to the background colour" : "to nothing")}) — drag the line it runs along",
+            Tool.Shape => L10n.F("Shape ({0}) — drag it out; Shift squares it, Alt grows it from the middle", L10n.T(_options.Shape.ToString())),
+            Tool.Gradient => L10n.F("Gradient ({0}, {1}) — drag the line it runs along", L10n.T(_options.Gradient.ToString()), L10n.T((_options.GradientToBackground ? "to the background colour" : "to nothing"))),
             Tool.Move => "Move — drag the layer, or a handle to scale and turn it",
             Tool.Marquee => "Marquee — drag a rectangle; Shift adds, Alt subtracts",
             Tool.Ellipse => "Elliptical marquee — drag an oval; Shift adds, Alt subtracts",
@@ -3315,9 +3448,8 @@ public sealed class MainWindow : Window
 
     /// <summary>What the brush is set to, in words, for the status line.</summary>
     private static string Spell(BrushSettings brush) =>
-        (brush.Hardness >= 1 ? "hard" : $"{brush.Hardness * 100:0}% hard") +
-        (brush.Opacity < 1 ? $", {brush.Opacity * 100:0}%" : "") +
-        $", color {brush.Red * 255:0},{brush.Green * 255:0},{brush.Blue * 255:0}";
+        L10n.F("hardness {0:0}%, opacity {1:0}%, color {2:0},{3:0},{4:0}",
+            brush.Hardness * 100, brush.Opacity * 100, brush.Red * 255, brush.Green * 255, brush.Blue * 255);
 
     /// <summary>Asks for one of the magic wand's amounts, as the options bar's own buttons do.</summary>
     private async Task SetWand(WandSetting which)
@@ -3341,7 +3473,7 @@ public sealed class MainWindow : Window
             _options.Wand = _options.Wand with { Radius = (int)Math.Round(radius) };
         }
         OptionsChanged();
-        Say($"Magic wand: tolerance {_options.Wand.Tolerance}, sampling {_options.Wand.Radius} pixels");
+        Say(L10n.F("Magic wand: tolerance {0}, sampling {1} pixels", _options.Wand.Tolerance, _options.Wand.Radius));
     }
 
     /// <summary>Asks for one of the Shape tool's amounts, as the options bar's own buttons do.</summary>
@@ -3363,7 +3495,7 @@ public sealed class MainWindow : Window
             }
         }
         OptionsChanged();
-        Say($"Shape: {_options.Shape}, radius {_options.ShapeCornerRadius:0}, width {_options.ShapeLineWidth:0}");
+        Say(L10n.F("Shape: {0}, radius {1:0}, width {2:0}", L10n.T(_options.Shape.ToString()), _options.ShapeCornerRadius, _options.ShapeLineWidth));
     }
 
     /// <summary>
@@ -3391,7 +3523,7 @@ public sealed class MainWindow : Window
         var layer = Selected is { } id && _document is { } document
             ? document.Layers.FirstOrDefault(one => one.ID == id)
             : null;
-        _optionsBar.Show(_tool, _document is not null, layer?.Mask is not null);
+        _optionsBar.Show(_tool, _document is not null, _options.PaintOnMask && layer?.Mask is not null);
         _optionsBar.ShowZoom(_canvas.Zoom * 100);
     }
 
@@ -3414,6 +3546,7 @@ public sealed class MainWindow : Window
         // brush does so a change from the bar reaches the canvas without a second path.
         _canvas.ShowsSampleRing = _options.ShowsSampleRing;
         ShowColours();
+        RefreshOptionsBar();
     }
 
     /// <summary>The rail's two swatches as the brush and the background have them.</summary>
@@ -3467,11 +3600,11 @@ public sealed class MainWindow : Window
         picker.Cancelled += () =>
         {
             _picker = null;
-            Say($"The {(foreground ? "foreground" : "background")} color was left as it was");
+            Say(L10n.F("The {0} color was left as it was", L10n.T((foreground ? "foreground" : "background"))));
         };
         _picker = picker;
         picker.Show(this);
-        Say($"Picking the {(foreground ? "foreground" : "background")} color — click the canvas to sample one");
+        Say(L10n.F("Picking the {0} color — click the canvas to sample one", L10n.T((foreground ? "foreground" : "background"))));
     }
 
     /// <summary>Takes the colour the picker ended on: the brush's, or the background's and the gradient's.</summary>
@@ -3488,8 +3621,7 @@ public sealed class MainWindow : Window
             if (toBackground) _options.GradientToBackground = true;
         }
         PushBrush();
-        Say($"{(foreground ? "Foreground" : "Background")} color: "
-            + $"{colour.Red * 255:0},{colour.Green * 255:0},{colour.Blue * 255:0}");
+        Say(L10n.F("{0} color: {1:0},{2:0},{3:0}", L10n.T((foreground ? "Foreground" : "Background")), colour.Red * 255, colour.Green * 255, colour.Blue * 255));
     }
 
     /// <summary>The Gradient tool's options, as the Mac build's gradient bar has them.</summary>
@@ -3497,7 +3629,7 @@ public sealed class MainWindow : Window
     {
         foreach (var shape in Enum.GetValues<GradientShape>())
         {
-            _gradientMenu.Items.Add(Command($"_{shape}", () => SetGradient(shape, null, null)));
+            _gradientMenu.Items.Add(Command(L10n.T(shape.ToString()), () => SetGradient(shape, null, null)));
         }
         _gradientMenu.Items.Add(new Separator());
         _gradientMenu.Items.Add(Command("_To the background color", () => SetGradient(null, true, null)));
@@ -3512,8 +3644,10 @@ public sealed class MainWindow : Window
         if (shape is { } wanted) _options.Gradient = wanted;
         if (toBackground is { } fade) _options.GradientToBackground = fade;
         if (reversed is { } turn) _options.GradientReversed = turn;
-        Say($"Gradient: {_options.Gradient}, {(_options.GradientToBackground ? "to the background colour" : "to nothing")}" +
-            (_options.GradientReversed ? ", reversed" : "") + ", opacity as the brush's");
+        Say(L10n.F("Gradient: {0}, {1}, reversed: {2}, opacity as the brush's",
+            L10n.T(_options.Gradient.ToString()),
+            L10n.T(_options.GradientToBackground ? "to the background colour" : "to nothing"),
+            L10n.T(_options.GradientReversed ? "on" : "off")));
         SetTool(_tool);
     }
 
@@ -3574,10 +3708,14 @@ public sealed class MainWindow : Window
             return;
         }
         var (mask, from, to, opacity, shape) = GradientPlan(document, id);
-        Edit(mask ? "Gradient Mask" : "Gradient",
-            () => GradientEdits.Fill(document, id, mask, start, end, from, to, opacity, shape));
+        if (!Edit(mask ? "Gradient Mask" : "Gradient",
+                () => GradientEdits.Fill(document, id, mask, start, end, from, to, opacity, shape)))
+        {
+            Say("Nothing to fill: that layer holds no pixels, or the selection does not reach it");
+            return;
+        }
         Reselect(id);
-        Say($"Gradient over {Math.Sqrt(Math.Pow(end.X - start.X, 2) + Math.Pow(end.Y - start.Y, 2)):0} pixels");
+        Say(L10n.F("Gradient over {0:0} pixels", Math.Sqrt(Math.Pow(end.X - start.X, 2) + Math.Pow(end.Y - start.Y, 2))));
     }
 
     /// <summary>The shapes the Shape tool draws, and the two numbers that shape them.</summary>
@@ -3585,7 +3723,7 @@ public sealed class MainWindow : Window
     {
         foreach (var kind in Enum.GetValues<ShapeKind>())
         {
-            var item = Command($"_{kind}", () => SetShapeKind(kind));
+            var item = Command(L10n.T(kind.ToString()), () => SetShapeKind(kind));
             _shapeKinds.Items.Add(item);
             _shapeKindItems[kind] = item;
         }
@@ -3615,7 +3753,7 @@ public sealed class MainWindow : Window
         }
         if (corner) _options.ShapeCornerRadius = value;
         else _options.ShapeLineWidth = Math.Max(1, value);
-        Say($"Shape: {_options.Shape}, {(corner ? "corner radius" : "line width")} {value:0.##} pixels");
+        Say(L10n.F("Shape: {0}, {1} {2:0.##} pixels", L10n.T(_options.Shape.ToString()), L10n.T((corner ? "corner radius" : "line width")), value));
     }
 
     private enum ShapeNumber
@@ -3664,7 +3802,7 @@ public sealed class MainWindow : Window
             return;
         }
         Reselect(made);
-        Say($"{_options.Shape}: {target.Width}x{target.Height} at {target.Left},{target.Top}");
+        Say(L10n.F("{0}: {1}x{2} at {3},{4}", L10n.T(_options.Shape.ToString()), target.Width, target.Height, target.Left, target.Top));
     }
 
     /// <summary>Where a document point sits in a box, as a fraction of its sides.</summary>
@@ -3680,6 +3818,7 @@ public sealed class MainWindow : Window
     /// </summary>
     private void CameraRawFilter()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document || Selected is not { } id) return;
         if (document.Layers.FirstOrDefault(layer => layer.ID == id) is not { Asset: not null, IsGroup: false })
         {
@@ -3768,7 +3907,7 @@ public sealed class MainWindow : Window
             return;
         }
         panel.AddGuide(new CameraRawGeometryGuide(from.X, from.Y, to.X, to.Y));
-        Say($"Upright: {panel.Guides.Count} line(s) drawn; the picture is turned by what they ask for");
+        Say(L10n.F("Upright: {0} line(s) drawn; the picture is turned by what they ask for", panel.Guides.Count));
     }
 
     /// <summary>The lines the panel has, in document pixels, for the canvas to draw over the picture.</summary>
@@ -3781,8 +3920,9 @@ public sealed class MainWindow : Window
             return;
         }
         var box = layer.Transform;
+        SKPoint Placed(double x, double y) => box.Point(box.FlipX ? 1 - x : x, box.FlipY ? 1 - y : y);
         _canvas.UprightGuides = panel.Guides
-            .Select(guide => (box.Point(guide.StartX, guide.StartY), box.Point(guide.EndX, guide.EndY)))
+            .Select(guide => (Placed(guide.StartX, guide.StartY), Placed(guide.EndX, guide.EndY)))
             .ToList();
     }
 
@@ -3790,9 +3930,9 @@ public sealed class MainWindow : Window
     /// point is off the layer.</summary>
     private static (double X, double Y)? Fraction(ImageLayer layer, SKPoint point)
     {
-        if (layer.Asset is not { } asset || asset.Width <= 0 || asset.Height <= 0) return null;
+        if (layer.Asset is null || !layer.Transform.IsValid) return null;
         if (layer.Transform.InBox(point) is not { } at) return null;
-        return (at.X / asset.Width, at.Y / asset.Height);
+        return (at.X / layer.Transform.Width, at.Y / layer.Transform.Height);
     }
 
     /// <summary>Writes the panel's amounts into the layer it was opened on, as one undo step.</summary>
@@ -3806,8 +3946,7 @@ public sealed class MainWindow : Window
         if (_document is not { } current || id is not { } layer || settings.IsIdentity) return;
         Edit("Camera Raw Filter", () => CameraRawEdits.Apply(current, layer, settings));
         Reselect(layer);
-        Say($"Camera Raw: exposure {settings.Exposure:0.##}, contrast {settings.Contrast:0}, " +
-            $"saturation {settings.Saturation:0}");
+        Say(L10n.F("Camera Raw: exposure {0:0.##}, contrast {1:0}, saturation {2:0}", settings.Exposure, settings.Contrast, settings.Saturation));
     }
 
     /// <summary>
@@ -3837,10 +3976,11 @@ public sealed class MainWindow : Window
     /// </summary>
     private async Task ApplyFilter(FilterKind kind)
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document || Selected is not { } id) return;
         if (document.Layers.FirstOrDefault(layer => layer.ID == id) is not { Asset: not null, IsGroup: false })
         {
-            Say($"{kind} needs a layer with pixels of its own");
+            Say(L10n.F("{0} needs a layer with pixels of its own", L10n.T(kind.ToString())));
             return;
         }
         StartPreview(document, id);
@@ -3848,6 +3988,12 @@ public sealed class MainWindow : Window
         {
             if (settings is { } amounts)
             {
+                // Zero is a valid request to show the original, not a failed filter whose last look should stay.
+                if (amounts.IsValid(kind) && !amounts.DoesAnything(kind))
+                {
+                    HidePreview();
+                    return;
+                }
                 RequestPreview((target, layer) => FilterEdits.Apply(target, layer, kind, amounts));
                 return;
             }
@@ -3861,7 +4007,7 @@ public sealed class MainWindow : Window
         if (_document is not { } current) return;
         Edit($"{kind} Filter", () => FilterEdits.Apply(current, id, kind, settings));
         Reselect(id);
-        Say($"{kind} applied");
+        Say(L10n.F("{0} applied", L10n.T(kind.ToString())));
     }
 
     /// <summary>
@@ -3870,6 +4016,7 @@ public sealed class MainWindow : Window
     /// </summary>
     private async Task DitherFilter()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document || Selected is not { } id) return;
         if (document.Layers.FirstOrDefault(layer => layer.ID == id) is not { Asset: not null, IsGroup: false })
         {
@@ -3887,7 +4034,7 @@ public sealed class MainWindow : Window
         if (_document is not { } current) return;
         Edit("Dither", () => DitherEdits.Apply(current, id, chosen.Style, chosen.Settings));
         Reselect(id);
-        Say($"Dither: {chosen.Style}, {chosen.Settings.Levels:0} tones");
+        Say(L10n.F("Dither: {0}, {1:0} tones", L10n.T(chosen.Style.ToString()), chosen.Settings.Levels));
     }
 
     /// <summary>
@@ -3953,7 +4100,7 @@ public sealed class MainWindow : Window
         foreach (var kind in Enum.GetValues<EffectKind>())
         {
             var wanted = kind;
-            _effectsMenu.Items.Add(LayerCommand(EffectDialog.TitleFor(kind) + "…", () => _ = EditEffect(wanted), null,
+            _effectsMenu.Items.Add(LayerCommand(L10n.T(EffectDialog.TitleFor(kind)) + "…", () => _ = EditEffect(wanted), null,
                 (_, layer) => layer.IsGroup == false));
         }
         _effectsMenu.Items.Add(new Separator());
@@ -3988,10 +4135,11 @@ public sealed class MainWindow : Window
     /// <summary>A new adjustment layer over the selected one, with its settings asked for straight away.</summary>
     private async Task NewAdjustment(AdjustmentKind kind)
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document) return;
         _history.Begin("New Adjustment Layer", document, Selected);
         var made = LayerPlacement.AddAdjustment(document, kind, Selected);
-        _history.End(document, Selected);
+        _history.End(document, made ?? Selected);
         if (made is null)
         {
             Say("This document already holds as many layers as it may.");
@@ -4004,6 +4152,7 @@ public sealed class MainWindow : Window
     /// <summary>The selected adjustment layer's settings, changed and put back as one undo step.</summary>
     private async Task EditAdjustment()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document || Selected is not { } id) return;
         if (LayerAdjustmentEdits.Settings(document, id) is not { } settings) return;
         StartPreview(document, id);
@@ -4014,7 +4163,7 @@ public sealed class MainWindow : Window
         if (_document is not { } current) return;
         Edit($"{LayerPlacement.Name(changed.Kind)} Adjustment", () => LayerAdjustmentEdits.Set(current, id, changed));
         Reselect(id);
-        Say($"{LayerPlacement.Name(changed.Kind)} adjustment set");
+        Say(L10n.F("{0} adjustment set", L10n.T(LayerPlacement.Name(changed.Kind))));
     }
 
     /// <summary>
@@ -4024,10 +4173,11 @@ public sealed class MainWindow : Window
     /// </summary>
     private async Task ImageAdjustment(AdjustmentKind kind)
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document || Selected is not { } id) return;
         if (document.Layers.FirstOrDefault(layer => layer.ID == id) is not { Asset: not null, IsGroup: false, Adjustment: null })
         {
-            Say($"{LayerPlacement.Name(kind)} needs a layer with pixels of its own");
+            Say(L10n.F("{0} needs a layer with pixels of its own", L10n.T(LayerPlacement.Name(kind))));
             return;
         }
         StartPreview(document, id);
@@ -4038,12 +4188,14 @@ public sealed class MainWindow : Window
         if (_document is not { } current) return;
         Edit(LayerPlacement.Name(kind), () => FilterEdits.ApplyAdjustment(current, id, settings));
         Reselect(id);
-        Say($"{LayerPlacement.Name(kind)} applied");
+        Say(L10n.F("{0} applied", L10n.T(LayerPlacement.Name(kind))));
     }
 
     /// <summary>Edit ▸ Copy: the selected pixels of the active layer, held for a paste.</summary>
     private void Copy()
     {
+        if (!MayEditImage()) return;
+        if (_recoveryPending || _windowClosePending || _tabClosePending.Count > 0) return;
         if (_document is not { } document || Selected is not { } id) return;
         var copied = SelectionClipboard.Copy(document, id);
         if (copied is null)
@@ -4052,12 +4204,15 @@ public sealed class MainWindow : Window
             return;
         }
         Adopt(copied);
-        Say($"Copied {copied.Region.Width} x {copied.Region.Height}");
+        Say(L10n.F("Copied {0} x {1}", copied.Region.Width, copied.Region.Height));
+        PublishCopiedImage(copied);
     }
 
     /// <summary>Edit ▸ Copy Merged: the selected pixels of everything that is drawn.</summary>
     private void CopyMerged()
     {
+        if (!MayEditImage()) return;
+        if (_recoveryPending || _windowClosePending || _tabClosePending.Count > 0) return;
         if (_document is not { } document) return;
         var copied = SelectionClipboard.CopyMerged(document);
         if (copied is null)
@@ -4066,12 +4221,15 @@ public sealed class MainWindow : Window
             return;
         }
         Adopt(copied);
-        Say($"Copied {copied.Region.Width} x {copied.Region.Height} from the flattened picture");
+        Say(L10n.F("Copied {0} x {1} from the flattened picture", copied.Region.Width, copied.Region.Height));
+        PublishCopiedImage(copied);
     }
 
     /// <summary>Edit ▸ Cut: the selected pixels taken off, and held for a paste.</summary>
     private void Cut()
     {
+        if (!MayEditImage()) return;
+        if (_recoveryPending || _windowClosePending || _tabClosePending.Count > 0) return;
         if (_document is not { } document || Selected is not { } id) return;
         ClipboardImage? copied;
         _history.Begin("Cut", document, Selected);
@@ -4089,12 +4247,15 @@ public sealed class MainWindow : Window
         }
         Adopt(copied);
         Reselect(id);
-        Say($"Cut {copied.Region.Width} x {copied.Region.Height}");
+        Say(L10n.F("Cut {0} x {1}", copied.Region.Width, copied.Region.Height));
+        PublishCopiedImage(copied, cut: true);
     }
 
     /// <summary>Edit ▸ Paste: the clipboard as a layer, where on the document it came from.</summary>
     private void Paste()
     {
+        if (!MayEditImage()) return;
+        if (UsesSystemImageClipboard) { _ = PasteFromSystemAsync(); return; }
         if (_document is not { } document) return;
         if (_clipboard is not { } clipboard)
         {
@@ -4109,7 +4270,7 @@ public sealed class MainWindow : Window
         }
         finally
         {
-            _history.End(document, Selected);
+            _history.End(document, made ?? Selected);
         }
         if (made is null)
         {
@@ -4117,12 +4278,13 @@ public sealed class MainWindow : Window
             return;
         }
         Reselect(made);
-        Say($"Pasted {clipboard.Region.Width} x {clipboard.Region.Height}");
+        Say(L10n.F("Pasted {0} x {1}", clipboard.Region.Width, clipboard.Region.Height));
     }
 
     /// <summary>Edit ▸ Layer via Copy: the selected pixels of the active layer as a layer of their own.</summary>
     private void LayerViaCopy()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document || Selected is not { } id) return;
         Guid? made = null;
         _history.Begin("Layer via Copy", document, Selected);
@@ -4132,7 +4294,7 @@ public sealed class MainWindow : Window
         }
         finally
         {
-            _history.End(document, Selected);
+            _history.End(document, made ?? Selected);
         }
         if (made is null)
         {
@@ -4168,7 +4330,7 @@ public sealed class MainWindow : Window
             return;
         }
         _canvas.Fit();
-        Say($"Image is now {asked.Width} x {asked.Height} at {asked.Resolution:0.##} per inch");
+        Say(L10n.F("Image is now {0} x {1} at {2:0.##} per inch", asked.Width, asked.Height, asked.Resolution));
     }
 
     /// <summary>A distortion has been taken hold of: one undo step for the whole drag, as a slider drag gets.</summary>
@@ -4222,6 +4384,7 @@ public sealed class MainWindow : Window
     private void GuideDragStarted()
     {
         if (_document is not { } document) return;
+        _draggedGuide = null;
         _history.Begin("Move Guide", document, Selected);
     }
 
@@ -4229,9 +4392,10 @@ public sealed class MainWindow : Window
     private void GuideMoved(Guid id, double position)
     {
         if (_document is not { } document) return;
+        _draggedGuide = id;
         if (!GuideEdits.Move(document, id, position)) return;
         _canvas.InvalidateVisual();
-        Say($"Guide at {position:0.#}");
+        Say(L10n.F("Guide at {0:0.#}", position));
     }
 
     /// <summary>
@@ -4241,11 +4405,13 @@ public sealed class MainWindow : Window
     private void GuideDragFinished()
     {
         if (_document is not { } document) return;
-        if (document.Guides.FirstOrDefault(guide => !GuideEdits.OnCanvas(document, guide)) is { } away)
+        if (_draggedGuide is { } id
+            && document.Guides.FirstOrDefault(guide => guide.ID == id && !GuideEdits.OnCanvas(document, guide)) is { } away)
         {
             GuideEdits.Remove(document, away.ID);
             Say("Guide taken away");
         }
+        _draggedGuide = null;
         _history.End(document, Selected);
         Refresh();
     }
@@ -4267,8 +4433,14 @@ public sealed class MainWindow : Window
         var at = Where(axis, ruler, onRuler);
         _history.Begin("New Guide", document, Selected);
         _pulledGuide = GuideEdits.Add(document, axis, at);
+        _draggedGuide = _pulledGuide;
+        if (_pulledGuide is null)
+        {
+            _history.End(document, Selected);
+            return;
+        }
         _canvas.InvalidateVisual();
-        Say($"Guide at {at:0.#}");
+        Say(L10n.F("Guide at {0:0.#}", at));
     }
 
     /// <summary>The guide being pulled off a ruler follows the pointer; the history step began when it was made.</summary>
@@ -4278,7 +4450,7 @@ public sealed class MainWindow : Window
         var at = Where(ruler.Axis, ruler, onRuler);
         if (!GuideEdits.Move(document, id, at)) return;
         _canvas.InvalidateVisual();
-        Say($"Guide at {at:0.#}");
+        Say(L10n.F("Guide at {0:0.#}", at));
     }
 
     /// <summary>
@@ -4320,7 +4492,7 @@ public sealed class MainWindow : Window
             if (at == flag) item.IsChecked = on;
         }
         KeepSwitches();
-        Say($"{label} {(on ? "on" : "off")}");
+        Say(L10n.F("{0} {1}", L10n.T(label), L10n.T((on ? "on" : "off"))));
     }
 
     /// <summary>The view's switches written down, so the next launch opens the way this one was left.</summary>
@@ -4344,16 +4516,16 @@ public sealed class MainWindow : Window
     {
         _gridVisible = !_gridVisible;
         _canvas.Grid = _gridVisible ? _grid : null;
-        _showGrid.Header = _gridVisible ? "_Hide Grid" : "Show _Grid";
+        _showGrid.Header = L10n.T(_gridVisible ? "_Hide Grid" : "Show _Grid");
         KeepSwitches();
         _canvas.InvalidateVisual();
-        Say(_gridVisible ? $"Grid every {_grid.Spacing} pixels" : "Grid hidden");
+        Say(_gridVisible ? L10n.F("Grid every {0} pixels", _grid.Spacing) : "Grid hidden");
     }
 
     /// <summary>A View menu row that is a switch: it opens where it was left and turns over when clicked.</summary>
     private static void Toggle(string header, MenuItem item, bool on, Action flip)
     {
-        item.Header = header;
+        item.Header = L10n.T(header);
         item.ToggleType = MenuItemToggleType.CheckBox;
         item.IsChecked = on;
         item.Click += (_, _) => flip();
@@ -4458,9 +4630,11 @@ public sealed class MainWindow : Window
     /// </summary>
     private void ProjectWritten(object? sender, EventArgs e)
     {
+        if (_history.HasPendingEdit || _canvas.HasPendingInteraction || _preview is not null || _text is not null
+            || _windowClosePending || _tabClosePending.Count > 0 || _recoveryBusy) return;
         if (_watch?.Changed() is not true) return;
         if (_document is not { } document || _projectPath is not { } path) return;
-        if (_history.IsModified)
+        if (_history.IsModified || _text is not null)
         {
             Say("The project has been written by something else — save or reopen to take the change up");
             return;
@@ -4470,8 +4644,9 @@ public sealed class MainWindow : Window
         {
             snapshot = ProjectStore.Load(path);
         }
-        catch (ProjectException)
+        catch (Exception error) when (error is ProjectException or IOException or UnauthorizedAccessException)
         {
+            _watch?.Retry();
             Say("The project has been written by something else, and what is there now cannot be read");
             return;
         }
@@ -4488,7 +4663,7 @@ public sealed class MainWindow : Window
         var again = selected.FirstOrDefault(id => _document.Layers.Any(layer => layer.ID == id));
         if (again != Guid.Empty) Reselect(again);
         Refresh();
-        Say($"{Path.GetFileName(path)} — taken up again, {_document.Layers.Count} layers");
+        Say(L10n.F("{0} — taken up again, {1} layers", Path.GetFileName(path), _document.Layers.Count));
     }
 
     /// <summary>
@@ -4513,7 +4688,7 @@ public sealed class MainWindow : Window
         if (_gridVisible) _canvas.Grid = _grid;
         KeepSwitches();
         _canvas.InvalidateVisual();
-        Say($"Grid every {_grid.Spacing} pixels, split {_grid.Subdivisions} ways");
+        Say(L10n.F("Grid every {0} pixels, split {1} ways", _grid.Spacing, _grid.Subdivisions));
     }
 
     /// <summary>View ▸ New Guide: a line across the canvas to line things up against.</summary>
@@ -4527,11 +4702,13 @@ public sealed class MainWindow : Window
         _history.End(current, Selected);
         if (made is null)
         {
-            Say("This document already holds as many guides as it may.");
+            Say(GuideEdits.Allowed(asked.Position)
+                ? "This document already holds as many guides as it may."
+                : "Enter a finite guide position between -1000000 and 1000000.");
             return;
         }
         Refresh();
-        Say($"{asked.Axis} guide at {asked.Position:0.#}");
+        Say(L10n.F("{0} guide at {1:0.#}", L10n.T(asked.Axis.ToString()), asked.Position));
     }
 
     /// <summary>View ▸ Clear Guides: every guide taken away, as one undo step.</summary>
@@ -4561,7 +4738,7 @@ public sealed class MainWindow : Window
             return;
         }
         if (!Edit("Auto Levels", () => LevelsEdits.Auto(document, id, mode))) Say("There is nothing in that layer to stretch");
-        else Say($"Auto Levels: {mode}");
+        else Say(L10n.F("Auto Levels: {0}", L10n.T(mode.ToString())));
         Reselect(id);
     }
 
@@ -4585,6 +4762,7 @@ public sealed class MainWindow : Window
 
     private void StartPreview(FilterPreview? preview, Guid? layerID)
     {
+        StopPreview();
         if (preview is null) return;
         _preview = preview;
         _previewLayer = layerID;
@@ -4692,6 +4870,7 @@ public sealed class MainWindow : Window
     /// </summary>
     private void ColorRange()
     {
+        if (!MayEditImage()) return;
         if (_document is not { } document) return;
         if (_colorRange is not null)
         {
@@ -4704,32 +4883,38 @@ public sealed class MainWindow : Window
             return;
         }
         _colorRange = session;
-        _colorRangeWas = document.Selection;
-        _history.Begin("Color Range", document, Selected);
+        var originalSelection = document.Selection;
+        var history = _history;
+        var selected = Selected;
+        history.Begin("Color Range", document, selected);
         var panel = new ColorRangePanel(session);
+        void Finish(bool keep)
+        {
+            if (!ReferenceEquals(_colorRange, session)) return;
+            if (!keep) document.Selection = originalSelection;
+            history.End(document, selected);
+            _finishColorRange = null;
+            _colorRangePanel = null;
+            _colorRange = null;
+            _canvas.EyedropperOnClick = _tool == Tool.Eyedropper;
+            panel.Close();
+            session.Dispose();
+            if (ReferenceEquals(_document, document)) Refresh();
+        }
+        _finishColorRange = Finish;
         panel.Changed += () =>
         {
-            // An amount or a switch moved: the selection is built again from the colours picked and shown.
-            if (_document is { } current) ShowColorRange(current, session.Rebuild(current));
+            if (ReferenceEquals(_document, document) && ReferenceEquals(_colorRange, session))
+                ShowColorRange(document, session.Rebuild(document));
         };
         panel.Applied += () =>
         {
-            if (_document is { } current) _history.End(current, Selected);
-            CloseColorRange();
-            Refresh();
-            Say($"Selected what is near {session.Include.Count} color(s) within {session.Fuzziness:0}");
+            var count = session.Include.Count;
+            var fuzziness = session.Fuzziness;
+            Finish(true);
+            Say(L10n.F("Selected what is near {0} color(s) within {1:0}", count, fuzziness));
         };
-        panel.Cancelled += () =>
-        {
-            if (_document is { } current)
-            {
-                current.Selection = _colorRangeWas ?? DocumentSelection.All;
-                // Ends as it began: the history drops a step whose document is what it started from.
-                _history.End(current, Selected);
-                _canvas.InvalidateVisual();
-            }
-            CloseColorRange();
-        };
+        panel.Cancelled += () => Finish(false);
         _colorRangePanel = panel;
         // The picture is live and every press on it samples, whichever tool is in hand, as the Mac's does.
         _canvas.EyedropperOnClick = true;
@@ -4745,18 +4930,11 @@ public sealed class MainWindow : Window
         _colorRangePanel?.Showing(_colorRange?.Mask(document), _colorRange?.Include.Count ?? 0,
             _colorRange?.Exclude.Count ?? 0);
         if (!changed) return;
-        Say(_colorRange?.Problem ?? $"{_colorRange?.Include.Count ?? 0} color(s) picked");
+        Say(_colorRange?.Problem ?? L10n.F("{0} color(s) picked", _colorRange?.Include.Count ?? 0));
     }
 
     /// <summary>Puts the panel away and lets the session and its sample go.</summary>
-    private void CloseColorRange()
-    {
-        _colorRangePanel = null;
-        _colorRange?.Dispose();
-        _colorRange = null;
-        _colorRangeWas = null;
-        _canvas.EyedropperOnClick = _tool == Tool.Eyedropper;
-    }
+    private void CloseColorRange() => _finishColorRange?.Invoke(false);
 
     /// <summary>Image ▸ Canvas Size: the canvas in pixels, with the picture kept at one of nine anchors.</summary>
     private async Task CanvasSize()
@@ -4765,7 +4943,7 @@ public sealed class MainWindow : Window
         if (await CanvasSizeDialog.Ask(this, document.Width, document.Height, CanvasEdits.CentreAnchor) is not { } asked) return;
         if (_document is not { } current) return;
         Edit("Canvas Size", () => CanvasEdits.Resize(current, asked.Width, asked.Height, asked.Anchor));
-        Say($"Canvas is now {asked.Width} x {asked.Height}");
+        Say(L10n.F("Canvas is now {0} x {1}", asked.Width, asked.Height));
     }
 
     /// <summary>Image ▸ Trim: the canvas cut back to what is actually drawn on it.</summary>
@@ -4775,7 +4953,7 @@ public sealed class MainWindow : Window
         if (await TrimDialog.Ask(this, new TrimOptions()) is not { } options) return;
         if (_document is not { } current) return;
         if (!Edit("Trim", () => TrimEdits.Trim(current, options))) Say("There was nothing to trim");
-        else Say($"Trimmed to {current.Width} x {current.Height}");
+        else Say(L10n.F("Trimmed to {0} x {1}", current.Width, current.Height));
     }
 
     /// <summary>
@@ -4789,11 +4967,11 @@ public sealed class MainWindow : Window
         foreach (var project in projects)
         {
             var path = project;
-            _recentMenu.Items.Add(Command(Path.GetFileName(path), () => OpenRecent(path)));
+            _recentMenu.Items.Add(Command(Path.GetFileName(path), () => OpenRecent(path), translate: false));
         }
         if (projects.Count == 0)
         {
-            _recentMenu.Items.Add(new MenuItem { Header = "Nothing yet", IsEnabled = false });
+            _recentMenu.Items.Add(new MenuItem { Header = L10n.T("Nothing yet"), IsEnabled = false });
         }
         _recentMenu.Items.Add(new Separator());
         var clear = Command("_Clear Menu", () =>
@@ -4813,15 +4991,16 @@ public sealed class MainWindow : Window
     }
 
     /// <summary>Opens a project from the recent list; one that has gone says so rather than failing quietly.</summary>
-    private void OpenRecent(string path)
+    private async void OpenRecent(string path)
     {
         try
         {
-            Open(path);
+            await OpenProjectPathAsync(path);
         }
         catch (Exception error)
         {
-            Say($"Could not open {Path.GetFileName(path)}: {error.Message}");
+            AppDiagnostics.Report("Open recent project", error);
+            Say(L10n.F("Could not open {0}: {1}", Path.GetFileName(path), OperationErrors.Describe(error)));
             RefreshRecent();
         }
     }
@@ -4868,7 +5047,7 @@ public sealed class MainWindow : Window
         _cropFrame = CropEdits.ApplyRatio(frame, wanted);
         ShowCropBox();
         Refresh();
-        Say($"Crop: {wanted:0.##} to 1");
+        Say(L10n.F("Crop: {0:0.##} to 1", wanted));
     }
 
     /// <summary>The crop frame follows the tool: the whole canvas until it is dragged.</summary>
@@ -4938,6 +5117,7 @@ public sealed class MainWindow : Window
     /// </summary>
     private void TypeHere(SKPoint origin)
     {
+        InvalidatePendingClipboardPaste();
         if (_document is not { } document) return;
         // A click inside the text already being typed stays in that session, and puts the caret where it
         // was clicked rather than at the end.
@@ -4947,10 +5127,10 @@ public sealed class MainWindow : Window
             return;
         }
         CommitText();
-        if (document.Layers.FirstOrDefault(layer => layer.Transform.Contains(origin) && layer.Text is not null)
-            is { } target)
+        if (TextEdits.HitTest(document, origin) is { } target)
         {
             _text = TextSession.Editing(target);
+            _text.PlaceCaret(document, origin);
             _history.Begin("Edit Text", document, target.ID);
         }
         else
@@ -5022,8 +5202,11 @@ public sealed class MainWindow : Window
         Refresh();
     }
 
-    private void ShowTextCaret() =>
-        _canvas.TextCaret = _document is { } document && _text is { } session ? session.Caret(document) : null;
+    private void ShowTextCaret()
+    {
+        _canvas.TextCaretLine = _document is { } document && _text is { } session ? session.CaretLine(document) : null;
+        _canvas.TextCaret = _document is { } current && _text is { } text ? text.Caret(current) : null;
+    }
 
     /// <summary>Ctrl and Enter: the words are kept, and the whole session is one undo step.</summary>
     private void CommitText()
@@ -5037,7 +5220,7 @@ public sealed class MainWindow : Window
         _history.End(document, kept);
         if (kept is { } layer) Reselect(layer);
         else Refresh();
-        if (kept is not null) Say($"Text: {typed.Replace('\n', ' ').Trim().Length} characters");
+        if (kept is not null) Say(L10n.F("Text: {0} characters", typed.Replace('\n', ' ').Trim().Length));
     }
 
     /// <summary>Escape: the words go back to what they were, and the history drops the step.</summary>
@@ -5058,20 +5241,20 @@ public sealed class MainWindow : Window
     {
         CommitText();
         if (_document is not { } document || Selected is not { } id) return;
-        if (document.Layers.FirstOrDefault(layer => layer.ID == id) is not { Text: { } text } layer)
+        if (document.Layers.FirstOrDefault(layer => layer.ID == id) is not { LiveText: { } text } layer)
         {
             Say("That layer is not text");
             return;
         }
         var origin = new SKPoint((float)layer.Transform.X, (float)layer.Transform.Y);
-        if (await TextDialog.Ask(this, "Edit text", text.Style) is not { } wanted) return;
+        if (await TextDialog.Ask(this, "Edit text", text) is not { } wanted) return;
         if (_document is not { } current) return;
         _history.Begin("Edit Text", current, id);
         var changed = TextEdits.SetStyle(current, id, wanted);
         _history.End(current, id);
         if (!changed) { Say("That text could not be drawn"); return; }
         Reselect(id);
-        Say($"Text: {wanted.Content.Length} characters at {origin.X:0},{origin.Y:0}");
+        Say(L10n.F("Text: {0} characters at {1:0},{2:0}", wanted.Content.Length, origin.X, origin.Y));
     }
 
     /// <summary>Where a brush stroke goes: the layer's pixels, or its mask.</summary>
@@ -5079,6 +5262,7 @@ public sealed class MainWindow : Window
     {
         _options.PaintOnMask = mask;
         _paintOnMask.IsChecked = mask;
+        RefreshOptionsBar();
         Say(mask
             ? "The brush paints on the layer's mask — white reveals, and Erase paints black"
             : "The brush paints on the layer's pixels");
@@ -5130,7 +5314,7 @@ public sealed class MainWindow : Window
         if (_picker is { } picking)
         {
             picking.Sample((colour.Red / 255.0, colour.Green / 255.0, colour.Blue / 255.0));
-            Say($"Sampled {colour.Red},{colour.Green},{colour.Blue} into the picker");
+            Say(L10n.F("Sampled {0},{1},{2} into the picker", colour.Red, colour.Green, colour.Blue));
             return;
         }
         // A transparent pixel has no colour to take; a part-transparent one is read as it looks on white.
@@ -5141,7 +5325,7 @@ public sealed class MainWindow : Window
             Blue = colour.Blue / 255.0,
         };
         PushBrush();
-        Say($"Brush color {colour.Red},{colour.Green},{colour.Blue}");
+        Say(L10n.F("Brush color {0},{1},{2}", colour.Red, colour.Green, colour.Blue));
     }
 
     /// <summary>How Spot Healing works out what to put in the painted area.</summary>
@@ -5149,7 +5333,7 @@ public sealed class MainWindow : Window
     {
         _options.Brush = _options.Brush with { Healing = mode };
         PushBrush();
-        Say($"Spot healing: {mode}");
+        Say(L10n.F("Spot healing: {0}", L10n.T(mode.ToString())));
     }
 
     /// <summary>Asks for one of the brush's settings and takes it, as an options bar would.</summary>
@@ -5190,7 +5374,7 @@ public sealed class MainWindow : Window
                 return;
         }
         PushBrush();
-        Say($"Brush: {_options.Brush.Diameter:0} pixels, {Spell(_options.Brush)}");
+        Say(L10n.F("Brush: {0:0} pixels, {1}", _options.Brush.Diameter, Spell(_options.Brush)));
     }
 
     private async Task<double?> Ask(string title, string label, string initial, double least, double most)
@@ -5198,7 +5382,7 @@ public sealed class MainWindow : Window
         if (await TextPrompt.Ask(this, title, label, initial) is not { } typed) return null;
         if (!double.TryParse(typed.Trim(), out var value) || value < least || value > most)
         {
-            Say($"That has to be a number from {least:0} to {most:0}");
+            Say(L10n.F("That has to be a number from {0:0} to {1:0}", least, most));
             return null;
         }
         return value;
@@ -5256,45 +5440,49 @@ public sealed class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Help ▸ Check for Updates: the app's feed is read and what it lists is compared with this build. The feed
-    /// is the one the Mac build publishes, so what can honestly be offered is the news — a newer version
-    /// exists, and where to read what changed — rather than an installer for this machine.
-    /// </summary>
-    private async Task CheckForUpdates()
+    /// <summary>The Windows build's version and repository, without consulting the macOS release feed.</summary>
+    private Task CheckForUpdates() => UpdateDialog.ShowWindowsReleaseInfo(this);
+
+    private async Task ExportDiagnostics()
     {
-        var running = UpdateDialog.Running;
-        string? feed = null;
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-            feed = await http.GetStringAsync(UpdateFeed.Address);
+            var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = L10n.T("Export Diagnostics"),
+                SuggestedFileName = $"Compositor-diagnostics-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
+                DefaultExtension = "zip",
+                FileTypeChoices = [new FilePickerFileType("ZIP") { Patterns = ["*.zip"] }],
+            });
+            if (file?.TryGetLocalPath() is not { } path) return;
+            if (!AppDiagnostics.Export(path, out var error))
+            {
+                await UpdateDialog.Ask(this, L10n.T("Diagnostics"), L10n.F("Could not export diagnostics: {0}", error));
+                return;
+            }
+            await UpdateDialog.Ask(this, L10n.T("Diagnostics"),
+                L10n.F("Diagnostics saved to {0}\n\nThe archive contains application logs and system information. Error messages may contain file paths. Review it before sharing. Project files and images are not included, and nothing is uploaded automatically.", path));
         }
-        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or UriFormatException)
+        catch (Exception error)
         {
-            // Offline, or the feed is not where it was: said plainly rather than leaving the row doing nothing.
+            AppDiagnostics.Report("Export diagnostics", error);
+            await UpdateDialog.Ask(this, L10n.T("Diagnostics"), L10n.F("Could not export diagnostics: {0}", OperationErrors.Describe(error)));
         }
-        if (feed is null)
+    }
+
+    private async Task OpenDiagnosticsFolder()
+    {
+        try
         {
-            await UpdateDialog.Ask(this, "Check for Updates",
-                $"The update feed could not be reached, so whether {running} is the latest is not known.");
-            return;
+            var path = AppDiagnostics.DirectoryPath;
+            if (!Directory.Exists(path)) throw new DirectoryNotFoundException(path);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
         }
-        if (UpdateFeed.Newest(feed) is not { } release)
+        catch (Exception error)
         {
-            await UpdateDialog.Ask(this, "Check for Updates", "The update feed had no release to read.");
-            return;
+            AppDiagnostics.Report("Open diagnostics folder", error);
+            await UpdateDialog.Ask(this, L10n.T("Diagnostics"), L10n.F("Could not open the diagnostics folder: {0}", OperationErrors.Describe(error)));
         }
-        if (!UpdateFeed.IsNewer(release, running))
-        {
-            await UpdateDialog.Ask(this, "Check for Updates", $"Compositor {running} is the latest.");
-            return;
-        }
-        Say($"Compositor {release.Version} is out; this build is {running}");
-        await UpdateDialog.Ask(this, "Check for Updates",
-            $"Compositor {release.Version} is out{(release.Published is { } when ? $", published {when}" : "")} — " +
-            $"this build is {running}. The Windows build is made from this repository.",
-            release.Page);
     }
 
     /// <summary>The background colour, which the gradient tool draws towards and a fill can use.</summary>
@@ -5381,10 +5569,10 @@ public sealed class MainWindow : Window
         }
         var most = which == SelectionAmount.Feather ? SelectionEdits.MaxFeather : SelectionEdits.MaxAmount;
         var label = which == SelectionAmount.Feather ? "Feather radius in pixels" : "Pixels";
-        if (await TextPrompt.Ask(this, $"Modify Selection — {which}", label, "4") is not { } typed) return;
+        if (await TextPrompt.Ask(this, L10n.F("Modify Selection: {0}", L10n.T(which.ToString())), label, "4") is not { } typed) return;
         if (!int.TryParse(typed.Trim(), out var amount) || amount < 1 || amount > most)
         {
-            Say($"The amount has to be a whole number from 1 to {most}");
+            Say(L10n.F("The amount has to be a whole number from 1 to {0}", most));
             return;
         }
         if (_document is not { } current) return;
@@ -5467,7 +5655,7 @@ public sealed class MainWindow : Window
         _cloneSource = point;
         // A new source starts a new alignment, as the Mac build's does.
         _cloneOffset = null;
-        Say($"Clone stamp copying from {point.X:0},{point.Y:0} — drag on the canvas");
+        Say(L10n.F("Clone stamp copying from {0:0},{1:0} — drag on the canvas", point.X, point.Y));
     }
 
     /// <summary>
@@ -5501,6 +5689,8 @@ public sealed class MainWindow : Window
         _transformBox = box;
         _transformOriginals = TransformEdits.GroupMembers(document, SelectedLayers)
             .ToDictionary(layer => layer.ID, layer => layer.Transform);
+        _transformMaskOriginals = TransformEdits.GroupMembers(document, SelectedLayers)
+            .Where(layer => layer.Mask is not null).ToDictionary(layer => layer.ID, layer => layer.Mask!.Placement);
         _history.Begin(_transformOriginals.Count > 1 ? "Transform Layers" : "Transform", document, id);
     }
 
@@ -5519,7 +5709,7 @@ public sealed class MainWindow : Window
             out var lineX, out var lineY, _snappingOn ? _snapTo : SnapTo.None, _gridVisible ? _grid : null);
         _canvas.SnapLines = (lineX, lineY);
         // Every layer is carried along by the box's own move, so several keep the shape they had.
-        TransformEdits.Carry(document, _transformOriginals, from, placed);
+        TransformEdits.Carry(document, _transformOriginals, from, placed, _transformMaskOriginals);
         _canvas.TransformBox = placed;
         Refresh();
     }
@@ -5530,6 +5720,7 @@ public sealed class MainWindow : Window
         _transforming = null;
         _transformBox = null;
         _transformOriginals.Clear();
+        _transformMaskOriginals.Clear();
         _canvas.SnapLines = (null, null);
         _history.End(document, id);
         ShowTransformBox();
@@ -5542,9 +5733,9 @@ public sealed class MainWindow : Window
         _canvas.InvalidateVisual();
         UpdateLayerMenu();
         if (_transforming is null) ShowTransformBox();
-        var undo = _history.CanUndo ? $"Undo {_history.UndoName}" : "";
-        var redo = _history.CanRedo ? $"Redo {_history.RedoName}" : "";
-        var edited = _history.IsModified ? "edited" : "";
+        var undo = _history.CanUndo ? L10n.F("Undo {0}", L10n.T(_history.UndoName ?? "")) : "";
+        var redo = _history.CanRedo ? L10n.F("Redo {0}", L10n.T(_history.RedoName ?? "")) : "";
+        var edited = _history.IsModified ? L10n.T("edited") : "";
         Say(string.Join("    ", new[] { undo, redo, edited }.Where(part => part.Length > 0)));
     }
 
@@ -5557,11 +5748,11 @@ public sealed class MainWindow : Window
         {
             var record = entry.Layer;
             var notes = new List<string>();
-            if (!entry.Visible) notes.Add("hidden");
-            if (record.BlendMode is { } blend && blend != LayerBlendMode.Normal) notes.Add(Spell(blend));
+            if (!entry.Visible) notes.Add(L10n.T("hidden"));
+            if (record.BlendMode is { } blend && blend != LayerBlendMode.Normal) notes.Add(L10n.T(Spell(blend)));
             if (record.Opacity is { } opacity and < 1) notes.Add($"{opacity:0.##}");
-            if (record.MaskFile is not null) notes.Add("mask");
-            if (record.MaskSourceID is not null) notes.Add("clipped");
+            if (record.MaskFile is not null) notes.Add(L10n.T("mask"));
+            if (record.MaskSourceID is not null) notes.Add(L10n.T("clipped"));
             rows.Add(new ListBoxItem
             {
                 // The row carries the layer it stands for, so a multi-selection can be read back.
@@ -5591,48 +5782,26 @@ public sealed class MainWindow : Window
         {
             var picked = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "Import an image",
+                Title = L10n.T("Import an image"),
                 AllowMultiple = false,
                 FileTypeFilter =
                 [
-                    new FilePickerFileType("Images") { Patterns = [.. ImageImporter.Extensions.Select(e => "*" + e)] },
+                    new FilePickerFileType(L10n.T("Images")) { Patterns = [.. ImageImporter.Extensions.Select(e => "*" + e)] },
                     FilePickerFileTypes.All,
                 ],
             });
             if (picked.Count == 0 || picked[0].TryGetLocalPath() is not { } path) return;
             if (!ImageImporter.LooksImportable(path))
             {
-                Say($"{Path.GetExtension(path)} files are not read; {string.Join(", ", ImageImporter.Extensions)} are");
+                Say(L10n.F("{0} files are not read; {1} are", Path.GetExtension(path), string.Join(", ", ImageImporter.Extensions)));
                 return;
             }
-            // Decoded once: a camera RAW is minutes of work, so the picture the document gets is this one.
-            var image = ImageImporter.Decode(path, Fitting());
-            if (_document is not { } document)
-            {
-                _document = ImageImporter.NewDocument(image);
-                _canvas.Document = _document;
-                _projectPath = null;
-                // Nothing is saved yet, so there is no folder to watch.
-                WatchProject();
-                _history.Reset();
-                ShowLayers(_document);
-                Say($"{Path.GetFileName(path)} — {_document.Width} by {_document.Height}, " +
-                    $"{_document.Layers.Count} layer, not saved yet");
-                Refresh();
-                return;
-            }
-            var origin = new SKPoint(
-                (float)((document.Width - image.Width) / 2.0), (float)((document.Height - image.Height) / 2.0));
-            _history.Begin("Import image", document, Selected);
-            document.Layers.Add(new ImageLayer(Guid.NewGuid(), image,
-                new LayerTransform(origin.X, origin.Y, image.Width, image.Height), image.Name));
-            _history.End(document, Selected);
-            Reselect(document.Layers[^1].ID);
-            Say($"Imported {Path.GetFileName(path)} at {image.Width} by {image.Height}");
+            ImportPath(path);
         }
         catch (Exception error)
         {
-            Say($"Could not import that image: {error.Message}");
+            AppDiagnostics.Report("Import image", error);
+            Say(L10n.F("Could not import that image: {0}", OperationErrors.Describe(error)));
         }
     }
 
@@ -5641,87 +5810,241 @@ public sealed class MainWindow : Window
 
     private void Save()
     {
-        if (_document is not { } document) return;
+        if (_document is null) return;
         if (_projectPath is null)
         {
             SaveAs();
             return;
         }
-        WriteTo(document, _projectPath);
+        WriteTo(_open, _projectPath);
     }
 
     private async void SaveAs()
     {
+        FinishActiveEdits();
         if (_document is not { } document) return;
+        var tab = _open;
         try
         {
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Save the project",
-                SuggestedFileName = _projectPath is { } known ? Path.GetFileName(known) : "Untitled.comp",
+                Title = L10n.T("Save the project"),
+                SuggestedFileName = tab.Path is { } known ? Path.GetFileName(known) : "Untitled.comp",
                 DefaultExtension = "comp",
             });
             if (file?.TryGetLocalPath() is not { } path) return;
-            // A project is a folder on Windows, so a path that is already a file cannot be written as one.
-            if (File.Exists(path))
-            {
-                Say("A project is a folder, and that path is a file.");
-                return;
-            }
-            WriteTo(document, path);
-            _projectPath = path;
-            RefreshTabs();
+            // The picker may stay open while another tab is selected or the original one is closed.
+            if (!_tabs.Contains(tab) || !ReferenceEquals(tab.Document, document)) return;
+            WriteTo(tab, path);
         }
         catch (Exception error)
         {
-            Say($"Could not save: {error.Message}");
+            AppDiagnostics.Report("Save project", error);
+            Say(L10n.F("Could not save: {0}", OperationErrors.Describe(error)));
         }
     }
 
-    private void WriteTo(CanvasDocument document, string path)
+    private bool WriteTo(Tab tab, string path)
     {
+        if (tab.Document is not { } document) return false;
         try
         {
+            if (ReferenceEquals(tab, _open)) FinishActiveEdits();
+            if (tab.History.HasPendingEdit)
+                throw new InvalidOperationException(L10n.T("Finish the current edit before saving."));
+            // A project is a folder on Windows. Never replace an ordinary file chosen in the picker.
+            if (File.Exists(path)) throw new IOException(L10n.T("A project is a folder, and that path is a file."));
             // The snapshot shares the document's pixels and only reads them, so it is not disposed here.
             ProjectStore.Save(ProjectSnapshot.FromDocument(document), path);
-            _history.MarkSaved();
-            // A save is the app's own writing, so the watch takes what is on disk now as what it holds: the
-            // folder is only worth watching for what someone else writes afterwards.
-            _watch = ProjectWatch.For(path);
-            WatchProject();
-            NoteRecent(path);
-            Refresh();
-            Say($"Saved {path}");
         }
         catch (Exception error)
         {
-            Say($"Could not save: {error.Message}");
+            AppDiagnostics.Report("Save project", error);
+            Say(L10n.F("Could not save: {0}", OperationErrors.Describe(error)));
+            return false;
+        }
+
+        // Only a completed write changes the destination or the saved revision. A failed Save As keeps
+        // pointing at the original project, with the edits and its existing watch intact.
+        tab.Path = path;
+        tab.History.MarkSaved();
+        tab.Watch = ProjectWatch.For(path);
+        if (ReferenceEquals(tab, _open))
+        {
+            WatchProject();
+            Refresh();
+        }
+        NoteRecent(path);
+        RefreshTabs();
+        Say(L10n.F("Saved {0}", path));
+        return true;
+    }
+
+    /// <summary>Checks save failure and Save As bookkeeping without displaying a native file picker.</summary>
+    internal string SaveSelfCheck()
+    {
+        if (_tabs.Count != 1 || _document is not null)
+            throw new InvalidOperationException("save checks require an empty window");
+        var root = Path.Combine(Path.GetTempPath(), "Compositor-save-" + Guid.NewGuid().ToString("N"), "中文路径");
+        Directory.CreateDirectory(root);
+        var recentBefore = File.Exists(_recent.Path) ? File.ReadAllBytes(_recent.Path) : null;
+        var report = new List<string>();
+        try
+        {
+            var original = Path.Combine(root, "原工程.comp");
+            using (var seed = new CanvasDocument(Guid.NewGuid(), 32, 24))
+            {
+                var pixels = new SKBitmap(Bitmaps.ColorInfo(32, 24));
+                pixels.Erase(SKColors.CornflowerBlue);
+                seed.Layers.Add(new ImageLayer(Guid.NewGuid(), ImportedImage.Create(pixels, "中文图层"),
+                    new LayerTransform(0, 0, 32, 24), "中文图层"));
+                ProjectStore.Save(ProjectSnapshot.FromDocument(seed), original);
+            }
+            Open(original);
+            var tab = _open;
+            var document = tab.Document ?? throw new InvalidOperationException("saved fixture did not open");
+            var originalBytes = Contents(original);
+            Rename("已编辑的中文图层");
+            var revision = tab.History.CurrentRevision;
+            var watch = tab.Watch;
+            if (!tab.History.IsModified) throw new InvalidOperationException("save fixture was not modified");
+
+            var occupied = Path.Combine(root, "已有文件.comp");
+            var sentinel = new byte[] { 0, 1, 127, 255 };
+            File.WriteAllBytes(occupied, sentinel);
+            CheckFailure(occupied);
+            if (!File.ReadAllBytes(occupied).SequenceEqual(sentinel))
+                throw new InvalidOperationException("failed save overwrote an existing file");
+            report.Add("occupied destination: failure reported; path, dirty revision, watch and existing bytes retained");
+
+            var blockedParent = Path.Combine(root, "被文件占用的父目录");
+            File.WriteAllBytes(blockedParent, sentinel);
+            CheckFailure(Path.Combine(blockedParent, "无法保存.comp"));
+            if (!File.ReadAllBytes(blockedParent).SequenceEqual(sentinel))
+                throw new InvalidOperationException("failed save overwrote an occupied parent");
+            report.Add("occupied parent: failure reported; original project and unsaved edits retained");
+
+            var destination = Path.Combine(root, "新目录", "另存工程.comp");
+            if (!WriteTo(tab, destination)) throw new InvalidOperationException("valid Save As failed");
+            if (tab.Path != destination || tab.History.IsModified || tab.Watch is null
+                || ReferenceEquals(tab.Watch, watch) || tab.Watch.Changed())
+                throw new InvalidOperationException("successful Save As did not move the path, revision and watch together");
+            if (_recent.All().FirstOrDefault() != destination)
+                throw new InvalidOperationException("successful Save As did not update recent projects");
+            CheckStored(destination, "已编辑的中文图层");
+            CheckUnchanged(original, originalBytes);
+            report.Add("Save As: Chinese destination reopened correctly; new path and watch active; original package unchanged");
+
+            Rename("第二次修改");
+            Save();
+            if (tab.History.IsModified || tab.Path != destination)
+                throw new InvalidOperationException("Save did not retain the new destination or clear the dirty revision");
+            CheckStored(destination, "第二次修改");
+            CheckUnchanged(original, originalBytes);
+            report.Add("Save after Save As: new destination updated; original package unchanged");
+
+            Rename("后台工程修改");
+            _open = TabForNew();
+            var frontDocument = new CanvasDocument(Guid.NewGuid(), 10, 12);
+            _open.Document = frontDocument;
+            var front = _open;
+            front.History.Begin("Resize", frontDocument, null);
+            frontDocument.Width = 11;
+            front.History.End(frontDocument, null);
+            Show(front);
+            var backgroundDestination = Path.Combine(root, "后台另存.comp");
+            if (!WriteTo(tab, backgroundDestination) || !ReferenceEquals(_open, front)
+                || front.Path is not null || !front.History.IsModified || front.Watch is not null)
+                throw new InvalidOperationException("saving a background tab changed the active tab's save state");
+            CheckStored(backgroundDestination, "后台工程修改");
+            report.Add("tab changed during Save As: only the original tab's save state changed");
+            return string.Join(Environment.NewLine, report);
+
+            void Rename(string name)
+            {
+                tab.History.Begin("Rename layer", document, document.Layers[0].ID);
+                document.Layers[0].Name = name;
+                tab.History.End(document, document.Layers[0].ID);
+            }
+
+            void CheckFailure(string path)
+            {
+                var recent = File.ReadAllBytes(_recent.Path);
+                if (WriteTo(tab, path)) throw new InvalidOperationException("unwritable destination was reported as saved");
+                if (tab.Path != original || !tab.History.IsModified || tab.History.CurrentRevision != revision
+                    || !ReferenceEquals(tab.Watch, watch) || !ReferenceEquals(tab.Document, document)
+                    || document.Layers[0].Name != "已编辑的中文图层")
+                    throw new InvalidOperationException("failed save changed the original project or its unsaved state");
+                if (!File.ReadAllBytes(_recent.Path).SequenceEqual(recent))
+                    throw new InvalidOperationException("failed save changed recent projects");
+                CheckUnchanged(original, originalBytes);
+            }
+        }
+        finally
+        {
+            _watchTimer?.Stop();
+            _canvas.Document = null;
+            foreach (var tab in _tabs) tab.Document?.Dispose();
+            _tabs.Clear();
+            _open = new Tab();
+            _tabs.Add(_open);
+            if (recentBefore is null) File.Delete(_recent.Path);
+            else File.WriteAllBytes(_recent.Path, recentBefore);
+            Directory.Delete(Path.GetDirectoryName(root)!, recursive: true);
+        }
+
+        static Dictionary<string, byte[]> Contents(string path) => Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+            .ToDictionary(file => Path.GetRelativePath(path, file), File.ReadAllBytes);
+
+        static void CheckUnchanged(string path, Dictionary<string, byte[]> expected)
+        {
+            var actual = Contents(path);
+            if (actual.Count != expected.Count || expected.Any(pair => !actual.TryGetValue(pair.Key, out var bytes)
+                || !bytes.SequenceEqual(pair.Value)))
+                throw new InvalidOperationException("the original package changed during Save As");
+        }
+
+        static void CheckStored(string path, string layerName)
+        {
+            using var saved = ProjectStore.Load(path);
+            if (saved.Manifest.Layers.Count != 1 || saved.Manifest.Layers[0].Name != layerName
+                || saved.Images.Values.Single().Image.GetPixel(0, 0) != SKColors.CornflowerBlue)
+                throw new InvalidOperationException("saved document did not round trip its Chinese name and pixels");
         }
     }
 
     private async void ExportPng()
     {
+        FinishActiveEdits();
         if (_document is not { } document)
         {
             Say("Nothing to export yet.");
             return;
         }
+        var tab = _open;
         try
         {
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Export PNG",
+                Title = L10n.T("Export PNG"),
                 SuggestedFileName = "Compositor export.png",
                 DefaultExtension = "png",
             });
             if (file?.TryGetLocalPath() is not { } path) return;
+            if (!_tabs.Contains(tab) || !ReferenceEquals(tab.Document, document))
+            {
+                Say("The project changed while exporting. Export it again.");
+                return;
+            }
+            if (ReferenceEquals(tab, _open)) FinishActiveEdits();
             // A band of tiles at a time, so the canvas size does not have to fit in one buffer.
             TiledPngWriter.Write(document, path);
-            Say($"Exported {path}");
+            Say(L10n.F("Exported {0}", path));
         }
         catch (Exception error)
         {
-            Say($"Could not export: {error.Message}");
+            AppDiagnostics.Report("Export image", error);
+            Say(L10n.F("Could not export: {0}", OperationErrors.Describe(error)));
         }
     }
 
@@ -5731,31 +6054,45 @@ public sealed class MainWindow : Window
     /// </summary>
     private async Task ExportJpeg()
     {
+        FinishActiveEdits();
         if (_document is not { } document)
         {
             Say("Nothing to export yet.");
             return;
         }
+        var tab = _open;
         try
         {
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Export JPEG",
+                Title = L10n.T("Export JPEG"),
                 SuggestedFileName = "Compositor export.jpg",
                 DefaultExtension = "jpg",
             });
             if (file?.TryGetLocalPath() is not { } path) return;
+            if (!_tabs.Contains(tab) || !ReferenceEquals(tab.Document, document))
+            {
+                Say("The project changed while exporting. Export it again.");
+                return;
+            }
             if (await QualityDialog.Ask(this) is not { } quality) return;
+            if (!_tabs.Contains(tab) || !ReferenceEquals(tab.Document, document))
+            {
+                Say("The project changed while exporting. Export it again.");
+                return;
+            }
+            if (ReferenceEquals(tab, _open)) FinishActiveEdits();
             if (!ImageWriter.Write(document, path, quality))
             {
                 Say("That canvas is too large to write as one JPEG.");
                 return;
             }
-            Say($"Exported {path}");
+            Say(L10n.F("Exported {0}", path));
         }
         catch (Exception error)
         {
-            Say($"Could not export: {error.Message}");
+            AppDiagnostics.Report("Export image", error);
+            Say(L10n.F("Could not export: {0}", OperationErrors.Describe(error)));
         }
     }
 
@@ -5770,11 +6107,11 @@ public sealed class MainWindow : Window
     /// </summary>
     private void Say(string message = "")
     {
-        if (message.Length > 0) _message = message;
+        if (message.Length > 0) _message = L10n.T(message);
         _status.Text = _message;
-        var limit = _canvas.ZoomedOutAsFarAsItGoes ? "    as far out as one screenful can be drawn" : "";
+        var limit = _canvas.ZoomedOutAsFarAsItGoes ? L10n.T("    as far out as one screenful can be drawn") : "";
         _statusInfo.Text = _document is not { } document
-            ? "Ready when you are"
-            : $"{_canvas.Zoom * 100:0}%    {document.Width} × {document.Height} px    sRGB · Transparent{limit}";
+            ? L10n.T("Ready when you are")
+            : L10n.F("{0:0}%    {1} × {2} px    sRGB · Transparent{3}", _canvas.Zoom * 100, document.Width, document.Height, limit);
     }
 }

@@ -223,12 +223,17 @@ public class GradientEditsTests
     }
 
     [Fact]
-    public void ALayerWithNothingToFillIsLeftAlone()
+    public void ABlankLayerGetsPixelsOnItsFirstGradient()
     {
         using var document = new CanvasDocument(Guid.NewGuid(), 20, 20);
         var blank = new ImageLayer(Guid.NewGuid(), null, new LayerTransform(0, 0, 20, 20), "Empty");
         document.Layers.Add(blank);
-        Assert.False(GradientEdits.Fill(document, blank.ID, mask: false, new SKPoint(0, 10), new SKPoint(20, 10),
+        Assert.True(GradientEdits.Fill(document, blank.ID, mask: false, new SKPoint(0, 10), new SKPoint(20, 10),
             SKColors.Black, SKColors.Black, 1, GradientShape.Linear));
+        Assert.NotNull(blank.Asset);
+        Assert.Equal(20, blank.Asset.Width);
+        Assert.Equal(20, blank.Asset.Height);
+        Assert.Equal(SKColors.Black, blank.Asset.Image.GetPixel(0, 0));
+        Assert.Equal(SKColors.Black, blank.Asset.Image.GetPixel(19, 19));
     }
 }

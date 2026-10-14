@@ -93,10 +93,10 @@ public sealed class CameraRawGeometrySettings
     /// are read here rather than in the sliders, so turning Upright off puts the picture back to the sliders'
     /// own amounts without clearing them.
     /// </summary>
-    private (double Vertical, double Horizontal, double Rotate) Effective()
+    private (double Vertical, double Horizontal, double Rotate) Effective(int width, int height)
     {
         if (Upright != CameraRawUprightMode.Guided) return (Vertical, Horizontal, Rotate);
-        var (vertical, horizontal, rotate) = GuidedUpright.Corrections(Guides);
+        var (vertical, horizontal, rotate) = GuidedUpright.Corrections(Guides, width, height);
         return (Vertical + vertical, Horizontal + horizontal, Rotate + rotate);
     }
 
@@ -111,7 +111,7 @@ public sealed class CameraRawGeometrySettings
         double w = width, h = height;
         // What the drawn lines ask for is added to the sliders here, so a guided picture is worked out on the
         // same corners as one the sliders were moved on.
-        var (down, across, turn) = settings.Effective();
+        var (down, across, turn) = settings.Effective(width, height);
         var strength = settings.Projection == GeometryProjection.Perspective ? 1.0 : 0.55;
         var keystone = down / 100 * w * 0.18 * strength;
         var sides = across / 100 * h * 0.18 * strength;

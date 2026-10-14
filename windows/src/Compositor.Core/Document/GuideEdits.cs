@@ -89,5 +89,5 @@ public static class GuideEdits
     /// A guide may sit anywhere the store would read back, which is well past the canvas on either side: a
     /// guide out in the pasteboard is where something is being lined up to, not a mistake.
     /// </summary>
-    private static bool Allowed(double position) => double.IsFinite(position) && Math.Abs(position) <= 1_000_000;
+    public static bool Allowed(double position) => double.IsFinite(position) && Math.Abs(position) <= 1_000_000;
 }

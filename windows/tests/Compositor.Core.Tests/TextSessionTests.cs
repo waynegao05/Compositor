@@ -195,6 +195,54 @@ public class TextSessionTests
         Assert.False(session.Backspace(document));
     }
 
+    [Theory]
+    [InlineData("e\u0301")]
+    [InlineData("\U0001F469\u200D\U0001F52C")]
+    [InlineData("\U0001F44D\U0001F3FD")]
+    [InlineData("\U00020000")]
+    public void NavigationAndDeletionKeepWholeTextElements(string element)
+    {
+        using var document = new CanvasDocument(Guid.NewGuid(), 400, 200);
+        var session = TextSession.New(Style("A" + element + "B"), new SKPoint(0, 0));
+        Assert.True(session.MoveCaret(TextSession.TextMove.Left));
+        Assert.Equal(1 + element.Length, session.CaretIndex);
+        Assert.True(session.MoveCaret(TextSession.TextMove.Left));
+        Assert.Equal(1, session.CaretIndex);
+        Assert.True(session.MoveCaret(TextSession.TextMove.Right));
+        Assert.Equal(1 + element.Length, session.CaretIndex);
+        Assert.True(session.Backspace(document));
+        Assert.Equal("AB", session.Content);
+        Assert.Equal(1, session.CaretIndex);
+
+        Assert.True(session.Type(document, element));
+        Assert.True(session.MoveCaret(TextSession.TextMove.Left));
+        Assert.True(session.Delete(document));
+        Assert.Equal("AB", session.Content);
+    }
+
+    [Fact]
+    public void VerticalNavigationCountsTextElementsWithoutSplittingThem()
+    {
+        var session = TextSession.New(Style("A\U0001F469\u200D\U0001F52CZ\nabe\u0301"), new SKPoint(0, 0));
+        Assert.True(session.MoveCaret(TextSession.TextMove.Left));
+        Assert.True(session.MoveCaret(TextSession.TextMove.Up));
+        Assert.Equal("A\U0001F469\u200D\U0001F52C".Length, session.CaretIndex);
+        Assert.True(session.MoveCaret(TextSession.TextMove.Down));
+        Assert.Equal(session.Content.Length - "e\u0301".Length, session.CaretIndex);
+    }
+
+    [Fact]
+    public void EmptyTextAndLeadingNewlinesHaveValidHomePositions()
+    {
+        var empty = TextSession.New(Style(), new SKPoint(0, 0));
+        Assert.False(empty.MoveCaret(TextSession.TextMove.Home));
+        Assert.False(empty.MoveCaret(TextSession.TextMove.Up));
+        var leadingNewline = TextSession.New(Style("\nA"), new SKPoint(0, 0));
+        Assert.True(leadingNewline.MoveCaret(TextSession.TextMove.Up));
+        Assert.Equal(0, leadingNewline.CaretIndex);
+        Assert.False(leadingNewline.MoveCaret(TextSession.TextMove.Home));
+    }
+
     [Fact]
     public void CommittingKeepsTheWordsAndAnswersWithTheLayer()
     {

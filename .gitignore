@@ -2,6 +2,10 @@
 dist/
 build/
 DerivedData/
+windows/**/bin/
+windows/**/obj/
+windows/**/TestResults/
+windows/scripts/**/__pycache__/
 *.xcarchive
 *.dmg
 

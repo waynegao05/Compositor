@@ -87,11 +87,14 @@ public static class LayerMerge
         if ((long)document.Width * document.Height > DocumentLimits.MaxSurfacePixels) return null;
         var kept = plan.Members.ToHashSet();
         var layers = document.Layers;
+        var prepared = layers.Select(layer => layer.Clone()).ToList();
+        var normalized = PushAncestorOpacity(prepared, kept);
+        var preparedByID = prepared.ToDictionary(layer => layer.ID);
 
         // The members on their own: folders they belong to but that are not part of the merge are left out,
         // and a clip whose base is outside the merge stops clipping rather than clipping to nothing.
         var subset = new List<ImageLayer>();
-        foreach (var layer in layers)
+        foreach (var layer in prepared)
         {
             if (!kept.Contains(layer.ID)) continue;
             var copy = layer.Clone();
@@ -127,8 +130,26 @@ public static class LayerMerge
             merged.Dispose();
             return null;
         }
+        if (normalized)
+        {
+            // A parent mask or a blend with unmerged content can make even the normalized result
+            // impossible to represent as one layer. Refuse it without changing the live records.
+            using var candidate = CanvasDocument.Borrowing(document.ID, document.Width, document.Height, document.Resolution);
+            foreach (var layer in placed)
+            {
+                var copy = layer.ID == merged.ID ? merged.Clone() : preparedByID[layer.ID].Clone();
+                if (copy.MaskSourceID is { } source && kept.Contains(source)) copy.MaskSourceID = merged.ID;
+                candidate.Layers.Add(copy);
+            }
+            if (!SameAppearance(document, candidate))
+            {
+                merged.Dispose();
+                return null;
+            }
+        }
         foreach (var layer in next)
         {
+            layer.Opacity = preparedByID[layer.ID].Opacity;
             if (layer.MaskSourceID is { } source && kept.Contains(source)) layer.MaskSourceID = merged.ID;
         }
         document.Layers.Clear();
@@ -141,6 +162,61 @@ public static class LayerMerge
             if (record.MaskSourceID is { } source && kept.Contains(source)) record.MaskSourceID = merged.ID;
             return record;
         }
+    }
+
+    /// <summary>
+    /// A pass-through folder applies opacity to each descendant, which cannot in general be represented
+    /// by the same opacity on one merged raster. Move only the affected ancestors' factors down one level
+    /// at a time, preserving every descendant's effective opacity, including hidden siblings.
+    /// </summary>
+    private static bool PushAncestorOpacity(List<ImageLayer> layers, HashSet<Guid> merged)
+    {
+        var byID = layers.ToDictionary(layer => layer.ID);
+        var ancestors = new HashSet<Guid>();
+        foreach (var member in layers.Where(layer => merged.Contains(layer.ID)))
+        {
+            var parent = member.ParentID;
+            for (var depth = 0; parent is { } id && depth < 64 && byID.TryGetValue(id, out var folder); depth++)
+            {
+                if (!merged.Contains(id)) ancestors.Add(id);
+                parent = folder.ParentID;
+            }
+        }
+        var changed = false;
+        // The hierarchy visits parents first, so a nested folder receives its parent's factor before
+        // passing its own combined factor on to its children.
+        foreach (var entry in LayerHierarchy.Entries(layers.Select(CanvasDocument.Record).ToList()))
+        {
+            if (!ancestors.Contains(entry.Layer.ID)) continue;
+            var folder = byID[entry.Layer.ID];
+            if (folder.Opacity == 1) continue;
+            foreach (var child in layers.Where(layer => layer.ParentID == folder.ID)) child.Opacity *= folder.Opacity;
+            folder.Opacity = 1;
+            changed = true;
+        }
+        return changed;
+    }
+
+    private static bool SameAppearance(CanvasDocument before, CanvasDocument after)
+    {
+        // Bound the extra verification buffers even when the project is near the surface size limit.
+        const int side = 256;
+        for (var y = 0; y < before.Height; y += side)
+        {
+            for (var x = 0; x < before.Width; x += side)
+            {
+                var region = SKRectI.Create(x, y, Math.Min(side, before.Width - x), Math.Min(side, before.Height - y));
+                using var original = DocumentRenderer.RenderRegion(before, region);
+                using var merged = DocumentRenderer.RenderRegion(after, region);
+                var left = original.GetPixelSpan();
+                var right = merged.GetPixelSpan();
+                for (var i = 0; i < left.Length; i++)
+                {
+                    if (Math.Abs(left[i] - right[i]) > 1) return false;
+                }
+            }
+        }
+        return true;
     }
 
     /// <summary>Where in the shortened array the anchor's slot lands once the members before it are gone.</summary>

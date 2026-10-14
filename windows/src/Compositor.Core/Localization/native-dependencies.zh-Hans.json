@@ -1,0 +1,3 @@
+{
+  "Camera RAW support could not be loaded. Keep all files from the portable package together. If the package is complete, install or repair Microsoft's Visual C++ v14 Redistributable (x64), then restart Compositor. PNG and JPEG editing can still be used. Official download: {0}": "无法加载相机 RAW 支持。请保留便携包中的全部文件；若文件完整，请安装或修复微软 Visual C++ v14 可再发行组件（x64），然后重启 Compositor。仍可编辑 PNG 和 JPEG。官方下载：{0}"
+}

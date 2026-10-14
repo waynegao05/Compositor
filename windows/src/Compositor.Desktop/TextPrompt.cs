@@ -17,14 +17,14 @@ internal sealed class TextPrompt : DialogWindow
 
     private TextPrompt(string title, string label, string initial)
     {
-        Title = title;
+        Title = L10n.T(title);
         Width = 380;
         SizeToContent = SizeToContent.Height;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         _box = new TextBox { Text = initial, Margin = new Thickness(0, 8, 0, 14) };
-        var ok = new Button { Content = "OK", IsDefault = true };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
+        var ok = new Button { Content = L10n.T("OK"), IsDefault = true };
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
         ok.Click += (_, _) => Accept();
         cancel.Click += (_, _) => Close();
         _box.KeyDown += (_, pressed) =>
@@ -38,7 +38,7 @@ internal sealed class TextPrompt : DialogWindow
             Margin = new Thickness(16),
             Children =
             {
-                new TextBlock { Text = label },
+                new TextBlock { Text = L10n.T(label) },
                 _box,
                 new StackPanel
                 {

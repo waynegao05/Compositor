@@ -134,17 +134,23 @@ public class ManifestFormatTests : ProjectTestBase
     /// A save writes sorted, pretty-printed keys, so a re-save of what was just read is a stable diff.
     /// The document's own file keeps the layout a person wrote; only what this writer produces is fixed.
     /// </summary>
-    [Fact]
-    public void SavingWritesSortedKeysAndReSavingIsStable()
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void SavingWritesSortedKeysAndReSavingIsStable(string inputNewLine)
     {
-        WriteProject("Guide.comp", DocumentedManifest, (DocumentedLayerFile, Picture(4, 4, SKColors.Blue)));
+        WriteProject("Guide.comp", DocumentedManifest.ReplaceLineEndings(inputNewLine),
+            (DocumentedLayerFile, Picture(4, 4, SKColors.Blue)));
 
         using var snapshot = ProjectStore.Load(PathIn("Guide.comp"));
-        var written = Serialized(snapshot.Manifest);
-        Assert.Equal(ExpectedMinimalManifest, written);
+        var writtenBytes = ManifestJson.Serialize(snapshot.Manifest);
+        // Raw string literals inherit the source checkout's line endings. Normalize only the fixture:
+        // the writer must still produce exactly these UTF-8 bytes, with LF on every platform.
+        Assert.Equal(Encoding.UTF8.GetBytes(ExpectedMinimalManifest.ReplaceLineEndings("\n")), writtenBytes);
+        var written = Encoding.UTF8.GetString(writtenBytes);
 
-        var rewritten = Serialized(ManifestJson.Deserialize(Encoding.UTF8.GetBytes(written)));
-        Assert.Equal(written, rewritten);
+        var rewrittenBytes = ManifestJson.Serialize(ManifestJson.Deserialize(writtenBytes));
+        Assert.Equal(writtenBytes, rewrittenBytes);
 
         foreach (var names in ObjectKeySets(written))
         {
@@ -152,6 +158,7 @@ public class ManifestFormatTests : ProjectTestBase
         }
         // Ordinal: a culture-aware search treats U+FEFF as a zero-weight character and matches anywhere.
         Assert.DoesNotContain("\uFEFF", written, StringComparison.Ordinal);
+        Assert.DoesNotContain("\r", written, StringComparison.Ordinal);
         Assert.False(written.EndsWith("\n", StringComparison.Ordinal));
     }
 

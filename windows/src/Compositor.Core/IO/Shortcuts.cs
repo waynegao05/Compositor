@@ -285,8 +285,7 @@ public sealed class ShortcutDefaults
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 
     /// <summary>Where the table is kept for whoever is using the app.</summary>
-    public static string DefaultPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Compositor", "shortcuts.json");
+    public static string DefaultPath => Path.Combine(AppDataPaths.Root, "shortcuts.json");
 
     /// <summary>Only the rows that are not on their original key.</summary>
     public Dictionary<string, ShortcutChord> Overrides { get; set; } = [];
@@ -307,17 +306,42 @@ public sealed class ShortcutDefaults
         }
     }
 
-    /// <summary>Writes the table out, quietly doing nothing when it cannot be written.</summary>
-    public void Save(string path)
+    /// <summary>Replace the saved table only after the complete new file has been flushed.</summary>
+    public bool Save(string path) => Save(path, out _);
+
+    public bool Save(string path, out string? error)
     {
+        error = null;
+        string? temporary = null;
         try
         {
-            var folder = Path.GetDirectoryName(Path.GetFullPath(path));
-            if (folder is not null) Directory.CreateDirectory(folder);
-            File.WriteAllText(path, JsonSerializer.Serialize(Kept(), Json));
+            var target = Path.GetFullPath(path);
+            var folder = Path.GetDirectoryName(target)!;
+            Directory.CreateDirectory(folder);
+            temporary = Path.Combine(folder, $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.tmp");
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                       4096, FileOptions.WriteThrough))
+            {
+                JsonSerializer.Serialize(stream, Kept(), Json);
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, target, overwrite: true);
+            temporary = null;
+            return true;
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or ArgumentException
+                                       or NotSupportedException or JsonException)
         {
+            error = failure.Message;
+            return false;
+        }
+        finally
+        {
+            if (temporary is not null)
+            {
+                try { File.Delete(temporary); }
+                catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { }
+            }
         }
     }
 

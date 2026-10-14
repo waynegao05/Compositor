@@ -34,7 +34,7 @@ public static class ImageEdits
         long used = 0;
         foreach (var layer in document.Layers)
         {
-            var box = Box(layer.Transform, layer.Asset?.Width ?? 0, layer.Asset?.Height ?? 0, sx, sy);
+            var box = Box(layer.Transform, layer.Asset?.Width ?? 1, layer.Asset?.Height ?? 1, sx, sy);
             if (box.Width < 1 || box.Height < 1
                 || box.Width > DocumentLimits.MaxSide || box.Height > DocumentLimits.MaxSide) return false;
             if (layer.Asset is { } asset)
@@ -43,12 +43,17 @@ public static class ImageEdits
                 used += (long)box.Width * box.Height;
             }
             var transform = new Model.LayerTransform(box.Left, box.Top, box.Width, box.Height, 0, false, false, sampling);
-            // A shape layer is drawn again at the new size rather than resampled, so a rounded corner keeps
-            // its radius and a line keeps its ends — as the Mac build redraws it.
-            var drawn = ShapeEdits.Scaled(layer, box.Width, box.Height);
-            var replacement = drawn?.Asset ?? (layer.Asset is { } pixels
-                ? ImportedImage.Create(Resample(pixels.Image, layer.Transform, sx, sy, box, sampling, gray: false)!, pixels.Name)
-                : null);
+            // An upright live shape can be redrawn. Rotation and flips must be baked into its pixels;
+            // redrawing its untransformed style would replace the visible shape with a different one.
+            var drawn = layer.Transform.Rotation == 0 && !layer.Transform.FlipX && !layer.Transform.FlipY
+                ? ShapeEdits.Scaled(layer, box.Width, box.Height) : null;
+            var replacement = drawn?.Asset;
+            if (replacement is null && layer.Asset is { } pixels)
+            {
+                var resampled = Resample(pixels.Image, layer.Transform, sx, sy, box, sampling, gray: false);
+                if (resampled is null) return false;
+                replacement = ImportedImage.Create(resampled, pixels.Name);
+            }
             var mask = layer.Mask;
             Model.LayerMask? maskResult = null;
             if (mask is { } carried)
@@ -81,7 +86,7 @@ public static class ImageEdits
         foreach (var (layer, asset, mask, transform, placement, shape) in made)
         {
             if (asset is not null) layer.Asset = asset;
-            if (shape is not null) layer.Shape = shape;
+            layer.Shape = shape;
             if (mask is not null)
             {
                 layer.Mask = mask;
@@ -89,6 +94,7 @@ public static class ImageEdits
             }
             layer.Transform = transform;
         }
+        document.Selection = document.Selection.Scaled(sx, sy);
         document.Width = width;
         document.Height = height;
         document.Resolution = resolution;
@@ -126,7 +132,11 @@ public static class ImageEdits
             ? new SKImageInfo(box.Width, box.Height, SKColorType.Gray8, SKAlphaType.Opaque)
             : Bitmaps.ColorInfo(box.Width, box.Height);
         var bitmap = new SKBitmap(info);
-        if (!bitmap.ReadyToDraw) return null;
+        if (!bitmap.ReadyToDraw)
+        {
+            bitmap.Dispose();
+            return null;
+        }
         bitmap.Erase(SKColors.Transparent);
         using (var canvas = new SKCanvas(bitmap))
         {

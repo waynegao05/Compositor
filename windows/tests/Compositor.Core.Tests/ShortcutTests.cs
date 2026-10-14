@@ -195,6 +195,24 @@ public class ShortcutTests : IDisposable
     }
 
     [Fact]
+    public void SaveReportsFailuresAndRemovesItsTemporaryFile()
+    {
+        Directory.CreateDirectory(_folder);
+        var defaults = new ShortcutDefaults();
+        Assert.True(defaults.Save(Path_, out var success));
+        Assert.Null(success);
+        var original = File.ReadAllBytes(Path_);
+        var blocked = Path.Combine(_folder, "blocked");
+        Directory.CreateDirectory(blocked);
+        Assert.False(defaults.Save(blocked, out var failure));
+        Assert.False(string.IsNullOrWhiteSpace(failure));
+        Assert.Equal(original, File.ReadAllBytes(Path_));
+        Assert.Empty(Directory.EnumerateFiles(_folder, "*.tmp"));
+        Assert.False(defaults.Save(Path.Combine(Path_, "child.json")));
+        Assert.Equal(original, File.ReadAllBytes(Path_));
+    }
+
+    [Fact]
     public void TheListCoversTheToolsAndTheMenus()
     {
         // The rows the port cannot do without: every tool letter, and the two the canvas answers to.

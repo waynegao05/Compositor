@@ -1,0 +1,13 @@
+{
+  "Finish the close confirmation before opening external files.": "请先完成关闭确认，再打开外部文件。",
+  "Finish project recovery before opening external files.": "请先完成工程恢复，再打开外部文件。",
+  "Wait for the current file operation to finish, then try again.": "请等待当前文件操作完成后重试。",
+  "Could not read dropped files: {0}": "无法读取拖入的文件：{0}",
+  "Remaining files were skipped because the editor is closing.": "编辑器正在关闭，已跳过剩余文件。",
+  "Files opened or imported: {0}; failed: {1}; skipped: {2}.": "已打开或导入 {0} 项，失败 {1} 项，跳过 {2} 项。",
+  "Choose a local file or a local .comp project folder. URLs and remote items cannot be opened here.": "请选择本地文件或本地 .comp 工程文件夹，此处不支持网址或远程项目。",
+  "The manifest must be inside a .comp project folder.": "manifest.json 必须位于 .comp 工程文件夹内。",
+  "Only .comp project folders can be opened as directories.": "仅支持打开 .comp 工程文件夹。",
+  "The selected file or project folder no longer exists.": "所选文件或工程文件夹已不存在。",
+  "This file type cannot be opened. Choose a supported image or a .comp project folder.": "无法打开此文件类型，请选择支持的图像或 .comp 工程文件夹。"
+}

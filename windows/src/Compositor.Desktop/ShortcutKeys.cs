@@ -11,6 +11,38 @@ namespace Compositor.Desktop;
 /// </summary>
 internal static class ShortcutKeys
 {
+    /// <summary>
+    /// Localize the core's validation message at the display boundary. The core's identifiers, validation
+    /// rules and persisted shortcut titles remain unchanged. Unknown messages keep their original text.
+    /// </summary>
+    internal static string? ProblemText(string? problem)
+    {
+        if (problem is null) return null;
+        const string invalid = " is not one key with modifiers Ctrl, Alt or Shift";
+        const string reserved = " is reserved by Windows";
+        const string conflict = " is on both ";
+        if (problem.EndsWith(invalid, StringComparison.Ordinal))
+            return L10n.F("{0} is not one key with modifiers Ctrl, Alt or Shift", problem[..^invalid.Length]);
+        if (problem.EndsWith(reserved, StringComparison.Ordinal))
+            return L10n.F("{0} is reserved by Windows", problem[..^reserved.Length]);
+        var split = problem.IndexOf(conflict, StringComparison.Ordinal);
+        if (split >= 0)
+        {
+            var titles = problem[(split + conflict.Length)..];
+            // Resolve against the known titles, so a title containing " and " is still unambiguous.
+            foreach (var definition in Shortcuts.Definitions)
+            {
+                var prefix = definition.Title + " and ";
+                if (!titles.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                var other = titles[prefix.Length..];
+                if (!Shortcuts.Definitions.Any(row => row.Title == other)) continue;
+                return L10n.F("{0} is on both {1} and {2}", problem[..split],
+                    L10n.T(definition.Title), L10n.T(other));
+            }
+        }
+        return problem;
+    }
+
     /// <summary>The modifiers of a chord in Avalonia's bits.</summary>
     internal static KeyModifiers Modifiers(ShortcutModifiers held)
     {

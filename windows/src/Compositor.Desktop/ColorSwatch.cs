@@ -26,7 +26,7 @@ internal sealed class ColorSwatch : Button
         Background = Brushes.Transparent;
         HorizontalContentAlignment = HorizontalAlignment.Stretch;
         VerticalContentAlignment = VerticalAlignment.Stretch;
-        ToolTip.SetTip(this, hint);
+        ToolTip.SetTip(this, L10n.T(hint));
     }
 
     /// <summary>The colour it shows, a channel each from 0 to 1.</summary>

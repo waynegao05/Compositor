@@ -42,6 +42,8 @@ internal static class Program
                 "shape" => Shape(args),
                 "gradient" => Gradient(args),
                 "camera-raw" => CameraRaw(args),
+                "sample" => Sample(args),
+                "verify-sample" => VerifySample(args),
                 _ => Fail($"'{args[0]}' is not a command. Try --help."),
             };
         }
@@ -78,7 +80,26 @@ internal static class Program
           gradient <in> <out> <layer> [linear|radial]       fill a layer with a gradient
           camera-raw <in> <out> <layer> [exposure] [contrast] [saturation] [vignette]
                                                               the Camera Raw filter over a layer
+          sample <new-output-directory>       create the Chinese Windows acceptance sample
+          verify-sample <directory>           check the untouched sample without changing it
         """);
+
+    private static int Sample(string[] args)
+    {
+        if (args.Length != 2) return Fail("sample needs a new or empty output directory.");
+        AcceptanceSample.Create(args[1]);
+        Console.WriteLine($"Created and verified the acceptance sample in {Path.GetFullPath(args[1])}");
+        return 0;
+    }
+
+    private static int VerifySample(string[] args)
+    {
+        if (args.Length != 2) return Fail("verify-sample needs the sample directory.");
+        AcceptanceSample.Verify(args[1]);
+        Console.WriteLine("PASS: format 11, Chinese names/text, layers, transparency, blending, guides, save/reopen and PNG export.");
+        Console.WriteLine("This checks saved content, not native IME, display scaling or font equality between platforms.");
+        return 0;
+    }
 
     private static int Info(string[] args)
     {
@@ -320,8 +341,8 @@ internal static class Program
         }
         var diameter = 40.0;
         var strength = 1.0;
-        if (args.Length >= 9 && !double.TryParse(args[9], out diameter)) return Fail("The diameter is a number of pixels.");
-        if (args.Length >= 10 && !double.TryParse(args[10], out strength)) return Fail("The strength is a number from 0 to 1.");
+        if (args.Length >= 10 && !double.TryParse(args[9], out diameter)) return Fail("The diameter is a number of pixels.");
+        if (args.Length >= 11 && !double.TryParse(args[10], out strength)) return Fail("The strength is a number from 0 to 1.");
         using var snapshot = ProjectStore.Load(args[1]);
         using var document = snapshot.ToDocument();
         var matches = document.Layers

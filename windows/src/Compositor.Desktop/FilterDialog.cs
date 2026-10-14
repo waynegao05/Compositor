@@ -19,7 +19,7 @@ internal sealed class FilterDialog : DialogWindow
     /// </summary>
     public Action<FilterSettings?>? Preview { get; set; }
 
-    private readonly CheckBox _preview = new() { Content = "Preview", IsChecked = true };
+    private readonly CheckBox _preview = new() { Content = L10n.T("Preview"), IsChecked = true };
 
     private readonly List<(Slider Slider, Action<FilterSettings, double> Set)> _rows = [];
     private readonly List<double> _fallbacks = [];
@@ -37,7 +37,7 @@ internal sealed class FilterDialog : DialogWindow
     private FilterDialog(FilterKind kind, FilterSettings start)
     {
         _amounts = start.Copy();
-        Title = kind switch
+        Title = L10n.T(kind switch
         {
             FilterKind.GaussianBlur => "Gaussian Blur",
             FilterKind.MotionBlur => "Motion Blur",
@@ -46,7 +46,7 @@ internal sealed class FilterDialog : DialogWindow
             FilterKind.Vignette => "Vignette",
             FilterKind.TonalContrast => "Tonal Contrast",
             _ => "Lens Correction",
-        };
+        });
         Width = 420;
         Height = 360;
         CanResize = true;
@@ -101,13 +101,13 @@ internal sealed class FilterDialog : DialogWindow
                 break;
         }
 
-        var ok = new Button { Content = "Apply", IsDefault = true };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
-        var reset = new Button { Content = "Reset" };
+        var ok = new Button { Content = L10n.T("Apply"), IsDefault = true };
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
+        var reset = new Button { Content = L10n.T("Reset") };
         ok.Click += (_, _) => Accept();
         cancel.Click += (_, _) => Close();
         reset.Click += (_, _) => Restore();
-        _preview.IsCheckedChanged += (_, _) => Preview?.Invoke(_preview.IsChecked == true ? Current() : null);
+        _preview.IsCheckedChanged += (_, _) => RefreshPreview();
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -121,11 +121,14 @@ internal sealed class FilterDialog : DialogWindow
     }
 
     /// <summary>A box that follows the setting it belongs to, and what it started as for Reset.</summary>
+    private void RefreshPreview() => Preview?.Invoke(_preview.IsChecked == true ? Current() : null);
+
     private void Check(StackPanel parent, string label, bool value, Action<FilterSettings, bool> set)
     {
-        var box = new CheckBox { Content = label, IsChecked = value };
+        var box = new CheckBox { Content = L10n.T(label), IsChecked = value };
         parent.Children.Add(box);
-        _checks.Add((box, set, value));
+        _checks.Add((box, set, false));
+        box.IsCheckedChanged += (_, _) => RefreshPreview();
     }
 
     private void Add(StackPanel parent, string label, double least, double most, double value, double fallback,
@@ -138,7 +141,7 @@ internal sealed class FilterDialog : DialogWindow
         {
             if (change.Property != Slider.ValueProperty) return;
             Show();
-            Preview?.Invoke(Current());
+            RefreshPreview();
         };
         Show();
         parent.Children.Add(new StackPanel
@@ -147,7 +150,7 @@ internal sealed class FilterDialog : DialogWindow
             Spacing = 8,
             Children =
             {
-                new TextBlock { Text = label, Width = 130, VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = L10n.T(label), Width = 130, VerticalAlignment = VerticalAlignment.Center },
                 slider,
                 readout,
             },
@@ -170,7 +173,7 @@ internal sealed class FilterDialog : DialogWindow
         {
             swatch.Colour = moved;
             set(_amounts, moved);
-            Preview?.Invoke(Current());
+            RefreshPreview();
         });
         parent.Children.Add(new StackPanel
         {
@@ -178,7 +181,7 @@ internal sealed class FilterDialog : DialogWindow
             Spacing = 8,
             Children =
             {
-                new TextBlock { Text = label, Width = 130, VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = L10n.T(label), Width = 130, VerticalAlignment = VerticalAlignment.Center },
                 swatch,
             },
         });
@@ -195,6 +198,7 @@ internal sealed class FilterDialog : DialogWindow
             swatch.Colour = fallback;
             set(_amounts, fallback);
         }
+        RefreshPreview();
     }
 
     /// <summary>The amounts as the panel has them, for a preview of what they would do. The self check reads
@@ -219,7 +223,9 @@ internal sealed class FilterDialog : DialogWindow
         Action<FilterSettings?>? preview = null)
     {
         var dialog = new FilterDialog(kind, start) { Preview = preview };
-        await dialog.ShowDialog(owner);
+        var closed = dialog.ShowDialog(owner);
+        dialog.RefreshPreview();
+        await closed;
         return dialog._result is { } settings && settings.IsValid(kind) && settings.DoesAnything(kind) ? settings : null;
     }
 }

@@ -301,17 +301,25 @@ public static class TransformEdits
 
     /// <summary>
     /// Carries a whole group along with its box, from what each layer was when the drag began. Nothing is
-    /// moved when the box has not.
+    /// moved when the resulting layer transforms already match. Returning to the starting box restores
+    /// the original transforms after an earlier move.
     /// </summary>
     public static bool Carry(CanvasDocument document, IReadOnlyDictionary<Guid, LayerTransform> originals,
-        LayerTransform from, LayerTransform to)
+        LayerTransform from, LayerTransform to, IReadOnlyDictionary<Guid, LayerTransform?>? maskOriginals = null)
     {
-        if (from == to) return false;
         var changed = false;
         foreach (var (id, original) in originals)
         {
             if (document.Layers.FirstOrDefault(layer => layer.ID == id) is not { } layer) continue;
-            layer.Transform = Following(original, from, to);
+            var next = Following(original, from, to);
+            if (layer.Transform == next) continue;
+            if (layer.Mask is { } mask)
+            {
+                mask.Placement = maskOriginals is not null && maskOriginals.TryGetValue(id, out var maskOriginal)
+                    ? mask.PlacementMoving(original, next, maskOriginal)
+                    : mask.PlacementMoving(layer.Transform, next);
+            }
+            layer.Transform = next;
             changed = true;
         }
         return changed;

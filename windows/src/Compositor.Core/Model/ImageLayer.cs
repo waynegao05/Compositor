@@ -84,7 +84,7 @@ public sealed class ImageLayer : IDisposable
             Opacity = Opacity,
             BlendMode = BlendMode,
             MaskSourceID = maskSourceID,
-            Mask = Mask,
+            Mask = Mask?.Clone(),
             Adjustment = Adjustment,
             Shape = Shape,
             Effects = Effects,

@@ -56,7 +56,7 @@ internal sealed class DitherDialog : DialogWindow
     private DitherDialog(DitherStyle style, DitherSettings start)
     {
         _amounts = start.Copy();
-        Title = "Dither";
+        Title = L10n.T("Dither");
         Width = 460;
         Height = 660;
         CanResize = true;
@@ -75,7 +75,7 @@ internal sealed class DitherDialog : DialogWindow
             Spacing = 8,
             Children =
             {
-                new TextBlock { Text = "Look", Width = 130, VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = L10n.T("Look"), Width = 130, VerticalAlignment = VerticalAlignment.Center },
                 _style,
             },
         }, () => true);
@@ -132,16 +132,16 @@ internal sealed class DitherDialog : DialogWindow
             Spacing = 8,
             Children =
             {
-                new TextBlock { Text = "Dark", VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = L10n.T("Dark"), VerticalAlignment = VerticalAlignment.Center },
                 dark,
-                new TextBlock { Text = "Light", Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = L10n.T("Light"), Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center },
                 light,
             },
         }, TwoColours);
 
-        var ok = new Button { Content = "Apply", IsDefault = true };
-        var cancel = new Button { Content = "Cancel", IsCancel = true };
-        var reset = new Button { Content = "Reset" };
+        var ok = new Button { Content = L10n.T("Apply"), IsDefault = true };
+        var cancel = new Button { Content = L10n.T("Cancel"), IsCancel = true };
+        var reset = new Button { Content = L10n.T("Reset") };
         ok.Click += (_, _) => Accept();
         cancel.Click += (_, _) => Close();
         reset.Click += (_, _) => Restore(defaults);
@@ -155,12 +155,17 @@ internal sealed class DitherDialog : DialogWindow
         });
 
         // A look, a pixel size or an ink choice that changes which controls apply is followed at once.
-        _style.SelectionChanged += (_, _) => Refresh();
-        _shape.SelectionChanged += (_, _) => Refresh();
-        _colors.SelectionChanged += (_, _) => Refresh();
+        _style.SelectionChanged += (_, _) => { Refresh(); RefreshPreview(); };
+        _shape.SelectionChanged += (_, _) => { Refresh(); RefreshPreview(); };
+        _colors.SelectionChanged += (_, _) => { Refresh(); RefreshPreview(); };
         _pixelSize.PropertyChanged += (_, change) =>
         {
             if (change.Property == Slider.ValueProperty) Refresh();
+        };
+        _lightOnDark.IsCheckedChanged += (_, _) => RefreshPreview();
+        _characters.PropertyChanged += (_, change) =>
+        {
+            if (change.Property == TextBox.TextProperty) RefreshPreview();
         };
         Refresh();
 
@@ -168,6 +173,8 @@ internal sealed class DitherDialog : DialogWindow
     }
 
     /// <summary>Whether the two-colour swatches apply, which they do once the ink and paper are chosen.</summary>
+    private void RefreshPreview() => Preview?.Invoke(Style(), Current());
+
     private bool TwoColours() => (DitherColors)Math.Max(0, _colors.SelectedIndex) == DitherColors.TwoColors;
 
     /// <summary>Shows the rows this look uses and hides the rest, headings included when their rows have gone.</summary>
@@ -181,7 +188,7 @@ internal sealed class DitherDialog : DialogWindow
     {
         var heading = new TextBlock
         {
-            Text = text,
+            Text = L10n.T(text),
             FontWeight = FontWeight.SemiBold,
             Margin = new Thickness(0, 10, 0, 2),
         };
@@ -200,7 +207,7 @@ internal sealed class DitherDialog : DialogWindow
 
     private void Choice(StackPanel parent, string label, ComboBox box, string[] options, int selected, Func<bool> applies)
     {
-        box.ItemsSource = options;
+        box.ItemsSource = options.Select(L10n.T).ToArray();
         box.SelectedIndex = Math.Clamp(selected, 0, options.Length - 1);
         Row(parent, new StackPanel
         {
@@ -208,7 +215,7 @@ internal sealed class DitherDialog : DialogWindow
             Spacing = 8,
             Children =
             {
-                new TextBlock { Text = label, Width = 130, VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = L10n.T(label), Width = 130, VerticalAlignment = VerticalAlignment.Center },
                 box,
             },
         }, applies);
@@ -217,7 +224,7 @@ internal sealed class DitherDialog : DialogWindow
     /// <summary>"Light on dark" is a box, not a list, since it says yes or no.</summary>
     private void Choice(StackPanel parent, string label, CheckBox box, bool selected, Func<bool> applies)
     {
-        box.Content = label;
+        box.Content = L10n.T(label);
         box.IsChecked = selected;
         Row(parent, box, applies);
     }
@@ -228,7 +235,7 @@ internal sealed class DitherDialog : DialogWindow
         Spacing = 8,
         Children =
         {
-            new TextBlock { Text = label, Width = 130, VerticalAlignment = VerticalAlignment.Center },
+            new TextBlock { Text = L10n.T(label), Width = 130, VerticalAlignment = VerticalAlignment.Center },
             box,
         },
     }, applies);
@@ -247,7 +254,7 @@ internal sealed class DitherDialog : DialogWindow
         {
             swatch.Colour = moved;
             set(_amounts, moved);
-            Preview?.Invoke(Style(), Current());
+            RefreshPreview();
         });
         _swatches.Add((swatch, set, fallback));
         return swatch;
@@ -264,7 +271,7 @@ internal sealed class DitherDialog : DialogWindow
         {
             if (change.Property != Slider.ValueProperty) return;
             Show();
-            Preview?.Invoke(Style(), Current());
+            RefreshPreview();
         };
         Show();
         Row(parent, new StackPanel
@@ -273,7 +280,7 @@ internal sealed class DitherDialog : DialogWindow
             Spacing = 8,
             Children =
             {
-                new TextBlock { Text = label, Width = 130, VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = L10n.T(label), Width = 130, VerticalAlignment = VerticalAlignment.Center },
                 slider,
                 readout,
             },
@@ -298,6 +305,7 @@ internal sealed class DitherDialog : DialogWindow
             set(_amounts, fallback);
         }
         Refresh();
+        RefreshPreview();
     }
 
     /// <summary>The look the panel has chosen, which is what its item stands for rather than its index. The
@@ -349,7 +357,9 @@ internal sealed class DitherDialog : DialogWindow
         DitherSettings start, Action<DitherStyle, DitherSettings>? preview = null)
     {
         var dialog = new DitherDialog(style, start) { Preview = preview };
-        await dialog.ShowDialog(owner);
+        var closed = dialog.ShowDialog(owner);
+        dialog.RefreshPreview();
+        await closed;
         if (dialog._result is not { } settings) return null;
         return (dialog.Style(), settings);
     }

@@ -19,8 +19,103 @@ namespace Compositor.Desktop;
 internal static class Program
 {
     [STAThread]
-    public static int Main(string[] args)
+    public static int Main(string[] args) => AppDiagnostics.Run(() => Run(args),
+        interactive: !args.Any(arg => arg.StartsWith("--", StringComparison.Ordinal)
+            && !arg.StartsWith("--language=", StringComparison.Ordinal)));
+
+    private static int Run(string[] args)
     {
+        string[] checks = ["--localization", "--ime", "--save-check", "--close-check", "--editing-check", "--import-check",
+            "--recovery-check", "--clipboard-check", "--external-files-check", "--render", "--rulers", "--window",
+            "--tabs", "--camera-raw", "--tools", "--shortcuts", "--clicks", "--theme-probe", "--dialogs", "--dialogs-check"];
+        var check = args.FirstOrDefault(arg => checks.Contains(arg, StringComparer.Ordinal));
+        using var profile = check is null ? null : AppDataPaths.UseTemporaryProfile();
+        if (check is not null) AppDiagnostics.Record($"Validation mode: {check}; temporary preferences; failures may be intentional test cases.");
+        var language = args.FirstOrDefault(arg => arg.StartsWith("--language=", StringComparison.Ordinal));
+        if (language is not null)
+        {
+            var selected = language["--language=".Length..];
+            if (selected is not (L10n.English or L10n.SimplifiedChinese or L10n.SystemLanguage))
+            {
+                Console.Error.WriteLine("Use --language=en, --language=zh-Hans or --language=system.");
+                return 2;
+            }
+            args = args.Where(arg => !arg.StartsWith("--language=", StringComparison.Ordinal)).ToArray();
+            L10n.Initialize(selected);
+        }
+        else L10n.Initialize();
+        AppDiagnostics.Record($"Interface language: {L10n.CurrentLanguage}.");
+        if (args is ["--diagnostics", var diagnosticOutput])
+        {
+            if (!AppDiagnostics.Export(diagnosticOutput, out var error))
+            {
+                Console.Error.WriteLine($"Could not export diagnostics: {error}");
+                return 1;
+            }
+            Console.WriteLine($"Diagnostics written to {diagnosticOutput}");
+            return 0;
+        }
+        if (args is ["--diagnostics-check"]) return AppDiagnostics.Check();
+        if (args is ["--native-dependencies"]) return NativeDependencyChecks.Run();
+        if (args is ["--recovery-check"])
+        {
+            BuildHeadless().SetupWithoutStarting();
+            Console.WriteLine(MainWindow.RecoverySelfCheck());
+            return 0;
+        }
+        if (args is ["--dialogs-check"])
+        {
+            BuildHeadless().SetupWithoutStarting();
+            Console.WriteLine(DialogRegressionChecks.Run());
+            return 0;
+        }
+        if (args is ["--clipboard-check"]) return RunAsyncCheck(MainWindow.ClipboardSelfCheck);
+        if (args is ["--external-files-check"]) return RunAsyncCheck(MainWindow.ExternalFilesSelfCheck);
+        if (args is ["--editing-check"])
+        {
+            BuildHeadless().SetupWithoutStarting();
+            Console.WriteLine(MainWindow.EditingSelfCheck());
+            Console.WriteLine(MainWindow.TransactionSelfCheck());
+            Console.WriteLine(MainWindow.TextInteractionSelfCheck());
+            Console.WriteLine(MainWindow.CanvasRegressionSelfCheck());
+            Console.WriteLine(MainWindow.TextShortcutSelfCheck());
+            Console.WriteLine(TextDialog.RichTextSelfCheck());
+            Console.WriteLine(CanvasInteractionChecks.Run());
+            var boundaryRoot = Path.Combine(Path.GetTempPath(), "compositor-boundaries-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(boundaryRoot);
+            try { Console.WriteLine(MainWindow.EditBoundarySelfCheck(boundaryRoot)); }
+            finally { Directory.Delete(boundaryRoot, recursive: true); }
+            Console.WriteLine(ShortcutDialog.RestoreDefaultsSelfCheck());
+            Console.WriteLine(OperationErrors.SelfCheck());
+            return 0;
+        }
+        if (args is ["--import-check"])
+        {
+            BuildHeadless().SetupWithoutStarting();
+            Console.WriteLine(MainWindow.ImportSelfCheck());
+            Console.WriteLine(MainWindow.ExportSelfCheck());
+            return 0;
+        }
+        if (args is ["--save-check"])
+        {
+            BuildHeadless().SetupWithoutStarting();
+            var window = new MainWindow();
+            try { Console.WriteLine(window.SaveSelfCheck()); }
+            finally { window.CloseForHeadlessCheck(); }
+            return 0;
+        }
+        if (args is ["--close-check"])
+        {
+            BuildHeadless().SetupWithoutStarting();
+            Console.WriteLine(MainWindow.CloseSelfCheck());
+            return 0;
+        }
+        if (args is ["--localization", var localizedOutput]) return Localization(localizedOutput);
+        if (args is ["--ime"])
+        {
+            BuildHeadless().SetupWithoutStarting();
+            return ImeChecks.Run();
+        }
         // Draws the canvas control straight to a PNG, so the interface can be checked without a window.
         // `--grid` turns the layout grid on for the render, which is how that drawing is checked.
         if (args is ["--render", var project, var output]) return Render(project, output, showGrid: false);
@@ -83,14 +178,34 @@ internal static class Program
         // history. It runs on Avalonia's headless platform, which is what makes hit-testing and pointer capture
         // real without a display.
         if (args is ["--clicks", var clicksOutput]) return Clicks(clicksOutput);
-        // `--updates` reads the app's real update feed and says what it makes of it, which is the whole check
-        // short of the dialog: off the network it prints that the feed could not be reached instead.
+        // This community Windows build reports its own version without contacting the macOS update feed.
         if (args is ["--updates"]) return Updates();
         if (args.Length >= 1 && args[0] == "--theme-probe") return ThemeProbe(args[1..]);
         // `--dialogs` draws a few dialog bodies under the real theme, which is the only way to look at their
         // colours: what a control's text and fill resolve to is the theme's business, not the dialog's.
         if (args is ["--dialogs", var dialogOutput]) return Dialogs(dialogOutput);
+        if (args.Any(arg => arg.StartsWith("--", StringComparison.Ordinal)))
+        {
+            Console.Error.WriteLine("Unknown or incomplete option. Diagnostics: --diagnostics <output.zip>, --diagnostics-check, --save-check. Language: --language=en|zh-Hans|system.");
+            return 2;
+        }
         Build().StartWithClassicDesktopLifetime(args);
+        return 0;
+    }
+
+    /// <summary>Run asynchronous UI checks with a live dispatcher, without starting a desktop lifetime.</summary>
+    private static int RunAsyncCheck(Func<Task<string>> run)
+    {
+        BuildHeadless().SetupWithoutStarting();
+        var task = run();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        while (!task.IsCompleted && elapsed.Elapsed < TimeSpan.FromSeconds(45))
+        {
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Thread.Sleep(1);
+        }
+        if (!task.IsCompleted) throw new TimeoutException("The asynchronous interface check did not finish.");
+        Console.WriteLine(task.GetAwaiter().GetResult());
         return 0;
     }
 
@@ -102,7 +217,7 @@ internal static class Program
     /// </summary>
     private static int ThemeProbe(string[] names)
     {
-        Build().SetupWithoutStarting();
+        BuildHeadless().SetupWithoutStarting();
         var theme = Application.Current!.Styles.OfType<FluentTheme>().First();
         if (theme.Resources is not ResourceDictionary resources) return 0;
         foreach (var variant in resources.ThemeDictionaries)
@@ -148,7 +263,7 @@ internal static class Program
     /// </summary>
     private static int Dialogs(string output)
     {
-        Build().SetupWithoutStarting();
+        BuildHeadless().SetupWithoutStarting();
         var folder = Path.GetDirectoryName(Path.GetFullPath(output))!;
         foreach (var (name, file, width, body) in new (string, string, double, Control)[]
                  {
@@ -159,15 +274,11 @@ internal static class Program
         {
             Draw(name, Path.Combine(folder, file), width, body);
         }
-        // A panel whose body is a scroll view cannot be drawn this way: a control's template is applied when it
-        // reaches a live window and a bitmap is not one, so a ScrollViewer has no presenter to lay its content
-        // out in. The Dither panel is one, so it is driven and counted rather than drawn. The Camera Raw panel
-        // is a scroll view too, but it is docked inside the window rather than a body on its own, so --camera-raw
-        // can draw it: that flag is the one to look at.
-        Console.WriteLine("the Dither and Camera Raw panels are scroll views, which a bitmap does not lay out on "
-            + "its own: --camera-raw draws the one that is docked in the window, and the Dither panel is counted "
-            + "below");
-        // The Dither panel is a scroll view too, so it is driven and counted rather than drawn. Its rows are
+        Console.WriteLine("Camera Raw is captured by --camera-raw; Dither visibility is checked below.");
+        var newProjectImage = Path.Combine(folder, "new-project.png");
+        if (!string.Equals(Path.GetFullPath(newProjectImage), Path.GetFullPath(output), StringComparison.Ordinal))
+            File.Copy(newProjectImage, output, overwrite: true);
+        // The Dither panel's rows are driven below to verify conditional visibility. Its rows are
         // built and then hidden by what the look uses, which is the check: an amount that would do nothing
         // for the look chosen must not be on the panel when Apply is pressed. Driving it works without a
         // window because a box's selection is a property, not a template.
@@ -180,7 +291,7 @@ internal static class Program
         // groups, so an item's index is not the look's.
         foreach (var name in new[] { "Atkinson (Classic Mac)", "Bayer 2 × 2", "Halftone Dots", "Mac Patterns", "ASCII" })
         {
-            var chosen = look.Items.OfType<ComboBoxItem>().ToList().FindIndex(item => (item.Content as string) == name);
+            var chosen = look.Items.OfType<ComboBoxItem>().ToList().FindIndex(item => (item.Content as string) == L10n.T(name));
             if (chosen < 0)
             {
                 Console.WriteLine($"the Dither panel has no look called {name}");
@@ -231,55 +342,89 @@ internal static class Program
     /// <summary>One body drawn on a window of the app's own make, at the width its dialog asks for.</summary>
     private static void Draw(string name, string path, double width, Control body)
     {
-        var holder = new CheckWindow { Width = width };
-        var shown = new Border { Background = holder.Background, Child = body };
-        holder.Content = shown;
-        shown.Measure(new Size(width, double.PositiveInfinity));
-        shown.Arrange(new Rect(0, 0, width, Math.Max(80, shown.DesiredSize.Height)));
-        shown.UpdateLayout();
-        var tall = (int)Math.Ceiling(shown.Bounds.Height);
-        using var target = new RenderTargetBitmap(new PixelSize((int)width, tall));
-        target.Render(shown);
-        target.Save(path, new PngBitmapEncoderOptions());
-        Console.WriteLine($"{name}: {body.GetType().Name} drawn {width}x{tall} on {holder.Background} to {path}");
+        var holder = new CheckWindow { Width = width, SizeToContent = SizeToContent.Height };
+        holder.Content = new Border { Background = holder.Background, Child = body };
+        try
+        {
+            holder.Show();
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            holder.UpdateLayout();
+            using var target = holder.CaptureRenderedFrame()
+                ?? throw new InvalidOperationException("The dialog did not render a frame.");
+            target.Save(path, new PngBitmapEncoderOptions());
+            Console.WriteLine($"{name}: {body.GetType().Name} rendered in a shown headless window to {path}");
+        }
+        finally { holder.Close(); }
+    }
+
+    private static void CaptureWindow(MainWindow window, string output)
+    {
+        try
+        {
+            if (!window.IsVisible) window.Show();
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+            using var target = window.CaptureRenderedFrame()
+                ?? throw new InvalidOperationException("The editor did not render a frame.");
+            target.Save(output, new PngBitmapEncoderOptions());
+        }
+        finally { window.CloseForHeadlessCheck(); }
     }
 
     /// <summary>A window of the app's own make, to hold a dialog's body while it is drawn.</summary>
     private sealed class CheckWindow : DialogWindow;
 
     /// <summary>
-    /// Help ▸ Check for Updates without the dialog: the feed is read from where the Mac build reads it, parsed,
-    /// and compared with this build's version.
+    /// Prints this distribution's version without consulting the macOS update feed.
     /// </summary>
     private static int Updates()
     {
-        Build().SetupWithoutStarting();
-        var running = UpdateDialog.Running;
-        string? feed;
+        Console.WriteLine($"Compositor {UpdateDialog.Running}: Windows community build; no Windows update feed is configured.");
+        return 0;
+    }
+
+    /// <summary>Checks localized menus, stable shortcuts and a project under a Unicode path together.</summary>
+    private static int Localization(string output)
+    {
+        BuildHeadless().SetupWithoutStarting();
+        var folder = Path.Combine(Path.GetTempPath(), "compositor-中文-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        MainWindow? window = null;
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            feed = http.GetStringAsync(UpdateFeed.Address).GetAwaiter().GetResult();
-        }
-        catch (Exception error) when (error is HttpRequestException or TaskCanceledException or UriFormatException)
-        {
-            feed = null;
-        }
-        if (feed is null)
-        {
-            Console.WriteLine($"the update feed could not be reached; this build is {running}");
+            var project = Path.Combine(folder, "中文项目.comp");
+            using (var document = Demo())
+            {
+                document.Layers[0].Name = "中文图层 Save";
+                ProjectStore.Save(ProjectSnapshot.FromDocument(document), project);
+            }
+            using (var loaded = ProjectStore.Load(project))
+            {
+                if (loaded.Manifest.Layers[0].Name != "中文图层 Save")
+                    throw new InvalidOperationException("A Unicode layer name changed during project round trip.");
+            }
+            window = new MainWindow();
+            Console.WriteLine(window.ShortcutsSelfCheck(project));
+            window.Show();
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            var menu = window.GetVisualDescendants().OfType<Menu>().Single();
+            var headers = menu.Items.OfType<MenuItem>().Select(item => item.Header?.ToString()).ToArray();
+            foreach (var source in new[] { "_File", "_Edit", "_Layer", "_Image", "_Filter", "_Tools", "_Select", "_View", "_Help" })
+            {
+                var expected = L10n.T(source);
+                if (L10n.CurrentLanguage == L10n.SimplifiedChinese && expected == source)
+                    throw new InvalidOperationException($"Missing Chinese menu translation: {source}");
+                if (!headers.Contains(expected)) throw new InvalidOperationException($"Menu did not display {expected}.");
+            }
+            CaptureWindow(window, output);
+            Console.WriteLine($"Localization passed: {L10n.CurrentLanguage}; Unicode project, menus and shortcut rebinding; wrote {output}");
             return 0;
         }
-        if (UpdateFeed.Newest(feed) is not { } release)
+        finally
         {
-            Console.WriteLine($"the update feed held no release; this build is {running}");
-            return 0;
+            window?.CloseForHeadlessCheck();
+            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
         }
-        Console.WriteLine($"this build is {running}; the feed lists {release.Version} ({release.Title})" +
-            (UpdateFeed.IsNewer(release, running) ? " — newer" : " — nothing to do") +
-            $", {(release.Download is null ? "no download" : $"{release.Bytes} bytes")}" +
-            (release.Page is { } page ? $", {page}" : ""));
-        return 0;
     }
 
     /// <summary>
@@ -289,7 +434,7 @@ internal static class Program
     /// </summary>
     private static int Tabs(string output)
     {
-        Build().SetupWithoutStarting();
+        BuildHeadless().SetupWithoutStarting();
         var folder = Path.Combine(Path.GetTempPath(), "compositor-tabs-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         try
@@ -303,13 +448,7 @@ internal static class Program
             }
             var window = new MainWindow();
             Console.WriteLine(window.SelfCheck(first, second));
-            var content = (Control)window.Content!;
-            content.Measure(new Size(1280, 820));
-            content.Arrange(new Rect(0, 0, 1280, 820));
-            content.UpdateLayout();
-            using var target = new RenderTargetBitmap(new PixelSize(1280, 820));
-            target.Render(content);
-            target.Save(output, new PngBitmapEncoderOptions());
+            CaptureWindow(window, output);
             Console.WriteLine($"wrote {output}: the tab strip driven and drawn");
             return 0;
         }
@@ -332,7 +471,7 @@ internal static class Program
     /// </summary>
     private static int CameraRaw(string output)
     {
-        Build().SetupWithoutStarting();
+        BuildHeadless().SetupWithoutStarting();
         var folder = Path.Combine(Path.GetTempPath(), "compositor-raw-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         try
@@ -341,13 +480,7 @@ internal static class Program
             using (var document = Demo()) ProjectStore.Save(ProjectSnapshot.FromDocument(document), project);
             var window = new MainWindow();
             Console.WriteLine(window.CameraRawSelfCheck(project));
-            var content = (Control)window.Content!;
-            content.Measure(new Size(1280, 820));
-            content.Arrange(new Rect(0, 0, 1280, 820));
-            content.UpdateLayout();
-            using var target = new RenderTargetBitmap(new PixelSize(1280, 820));
-            target.Render(content);
-            target.Save(output, new PngBitmapEncoderOptions());
+            CaptureWindow(window, output);
             Console.WriteLine($"wrote {output}: the window with the Camera Raw panel docked");
             return 0;
         }
@@ -370,7 +503,7 @@ internal static class Program
     /// </summary>
     private static int Tools(string output)
     {
-        Build().SetupWithoutStarting();
+        BuildHeadless().SetupWithoutStarting();
         var folder = Path.Combine(Path.GetTempPath(), "compositor-tools-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         try
@@ -379,20 +512,12 @@ internal static class Program
             using (var document = Demo()) ProjectStore.Save(ProjectSnapshot.FromDocument(document), project);
             var window = new MainWindow();
             Console.WriteLine(window.ToolsSelfCheck(project));
-            var content = (Control)window.Content!;
-            content.Measure(new Size(1280, 820));
-            content.Arrange(new Rect(0, 0, 1280, 820));
-            content.UpdateLayout();
-            using var target = new RenderTargetBitmap(new PixelSize(1280, 820));
-            target.Render(content);
-            target.Save(output, new PngBitmapEncoderOptions());
+            CaptureWindow(window, output);
             Console.WriteLine($"wrote {output}: the window with the rail and the toolbar");
-            // The rail's own marks are inside a scroll view, which a bitmap does not lay out, so the column is
-            // drawn on its own as well: that is the picture the marks can be looked at in.
+            // Capture the rail separately as well so its marks can be inspected at their own scale.
             var rail = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(output))!, "tools-rail.png");
             Draw("the tool rail", rail, 56, new ToolRail().TakeTools());
-            Console.WriteLine("the rail's column scrolls, and a bitmap does not lay a scroll view out, so the "
-                + "window's own drawing leaves it blank: the marks are in tools-rail.png");
+            Console.WriteLine("the tool rail is also captured in tools-rail.png");
             return 0;
         }
         finally
@@ -414,7 +539,7 @@ internal static class Program
     /// </summary>
     private static int Shortcuts(string output)
     {
-        Build().SetupWithoutStarting();
+        BuildHeadless().SetupWithoutStarting();
         var folder = Path.Combine(Path.GetTempPath(), "compositor-keys-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         try
@@ -423,19 +548,12 @@ internal static class Program
             using (var document = Demo()) ProjectStore.Save(ProjectSnapshot.FromDocument(document), project);
             var window = new MainWindow();
             Console.WriteLine(window.ShortcutsSelfCheck(project));
-            var content = (Control)window.Content!;
-            content.Measure(new Size(1280, 820));
-            content.Arrange(new Rect(0, 0, 1280, 820));
-            content.UpdateLayout();
-            using var target = new RenderTargetBitmap(new PixelSize(1280, 820));
-            target.Render(content);
-            target.Save(output, new PngBitmapEncoderOptions());
+            CaptureWindow(window, output);
             Console.WriteLine($"wrote {output}: the window, whose menu rows carry their keys");
             var sheet = new ShortcutDialog(new Dictionary<string, ShortcutChord>());
             var rows = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(output))!, "shortcuts-sheet.png");
             Draw("the shortcut sheet's rows", rows, 640, sheet.TakeRows());
-            Console.WriteLine("the sheet itself is a window whose list is inside a scroll view, which a bitmap "
-                + "does not lay out, so its rows are drawn by themselves above");
+            Console.WriteLine("the shortcut rows are also captured in shortcuts-sheet.png");
             return 0;
         }
         finally
@@ -456,17 +574,9 @@ internal static class Program
     /// </summary>
     private static int Window(string output)
     {
-        Build().SetupWithoutStarting();
+        BuildHeadless().SetupWithoutStarting();
         var window = new MainWindow();
-        // A window's own content is not laid out without a platform window, so what is measured, arranged and
-        // drawn is that content — which is the whole interface: the menus, the tab strip and the panel.
-        var content = (Control)window.Content!;
-        content.Measure(new Size(1280, 820));
-        content.Arrange(new Rect(0, 0, 1280, 820));
-        content.UpdateLayout();
-        using var target = new RenderTargetBitmap(new PixelSize(1280, 820));
-        target.Render(content);
-        target.Save(output, new PngBitmapEncoderOptions());
+        CaptureWindow(window, output);
         Console.WriteLine($"wrote {output}: the window built and drew");
         return 0;
     }
@@ -477,7 +587,7 @@ internal static class Program
     /// </summary>
     private static int Rulers(string output, double scale, double origin)
     {
-        Build().SetupWithoutStarting();
+        BuildHeadless().SetupWithoutStarting();
         var strip = new RulerStrip { Axis = GuideAxis.Horizontal, Scale = scale, Origin = origin };
         strip.Measure(new Size(600, 18));
         strip.Arrange(new Rect(0, 0, 600, 18));
@@ -553,7 +663,7 @@ internal static class Program
     private static int Render(string project, string output, bool showGrid, bool preview = false, bool shape = false,
         bool zoomIn = false, bool pixelGrid = false, bool gradient = false)
     {
-        Build().SetupWithoutStarting();
+        BuildHeadless().SetupWithoutStarting();
         using var document = project == "--demo" ? Demo() : ProjectStore.Load(project).ToDocument();
 
         // Walk the same path the Edit menu does, and report what the history made of it.

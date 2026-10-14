@@ -14,7 +14,7 @@ struct ColorRangeSheet: View {
                         // Holding Shift or Option lights up the eyedropper a click will use.
                         .background(edit?.effectiveMode == mode ? Color.accentColor.opacity(0.25) : .clear,
                                     in: RoundedRectangle(cornerRadius: 4))
-                        .help(help(mode))
+                        .help(L10n.tr(help(mode)))
                         .accessibilityLabel("\(mode.rawValue) color")
                 }
                 Spacer()
@@ -34,7 +34,7 @@ struct ColorRangeSheet: View {
             Toggle("Invert", isOn: Binding(get: { edit?.invert ?? false }, set: { edit?.invert = $0; session.updateColorRange() }))
                 .help("Select everything except those colors, such as all but a green screen")
             if let error = edit?.error {
-                Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                Text(L10n.tr(error)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
             HStack {

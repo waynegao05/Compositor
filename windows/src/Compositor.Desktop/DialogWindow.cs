@@ -1,5 +1,9 @@
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
+using Avalonia.Controls.Presenters;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.VisualTree;
 
 namespace Compositor.Desktop;
 
@@ -18,5 +22,16 @@ internal abstract class DialogWindow : Window
         // black. Setting the inherited one leaves every control that says what its own text is — a button, a
         // field, a menu row — exactly as the theme drew it.
         TextElement.SetForeground(this, Skin.LabelBrush);
+        AddHandler(KeyDownEvent, (_, e) =>
+        {
+            if (FocusManager?.GetFocusedElement() is not TextBox box) return;
+            // A TextBox leaves native composition keys unhandled. Stop them before they reach a dialog's
+            // Enter/Escape handlers or its default/cancel buttons.
+            if (e.Key == Key.ImeProcessed || box.GetVisualDescendants().OfType<TextPresenter>()
+                .Any(presenter => !string.IsNullOrEmpty(presenter.PreeditText)))
+            {
+                e.Handled = true;
+            }
+        }, RoutingStrategies.Tunnel);
     }
 }

@@ -1,3 +1,4 @@
+using Compositor.Core.Document;
 using Compositor.Core.Format;
 using Compositor.Core.Model;
 using Compositor.Core.Pixels;
@@ -251,8 +252,8 @@ public static class DocumentRenderer
             var painted = mixed;
             if (layer.Mask is { } mask && mask.EnabledImage is { } maskPixels)
             {
-                var local = Shift(Bounds(layer.MaskTransform, 0), target.Origin);
-                masked = Mix(original, mixed, 1f, maskPixels, local, Coverage.Gray);
+                var mapping = MaskToPixels(maskPixels, layer.MaskTransform, target.Origin);
+                masked = Mix(original, mixed, 1f, maskPixels, default, Coverage.Gray, mapping);
                 painted = masked;
             }
             var region = SKRectI.Create(target.Origin.X, target.Origin.Y, width, height);
@@ -382,7 +383,7 @@ public static class DocumentRenderer
             }
             foreach (var (mask, transform) in Masks(layer, includeOwn: true))
             {
-                var restricted = Restrict(content, bounds, mask, Bounds(transform, 0), luminance: true);
+                var restricted = RestrictMask(content, mask, MaskToPixels(mask, transform, bounds.Location));
                 content.Dispose();
                 content = restricted;
             }
@@ -408,7 +409,7 @@ public static class DocumentRenderer
             }
             foreach (var (mask, maskTransform) in Masks(layer, includeOwn: false))
             {
-                var restricted = Restrict(content, bounds, mask, Bounds(maskTransform, 0), luminance: true);
+                var restricted = RestrictMask(content, mask, MaskToPixels(mask, maskTransform, bounds.Location));
                 content.Dispose();
                 content = restricted;
             }
@@ -434,7 +435,6 @@ public static class DocumentRenderer
         /// <summary>The layer's pixels in their own grid with its own mask applied, as the effects path wants.</summary>
         private static SKBitmap ImageWithOwnMask(ImageLayer layer, ImportedImage asset)
         {
-            var bounds = SKRectI.Create(0, 0, asset.Width, asset.Height);
             var image = Allocate(asset.Width, asset.Height);
             using (var canvas = new SKCanvas(image))
             {
@@ -444,7 +444,17 @@ public static class DocumentRenderer
             }
             if (layer.Mask is { } mask && mask.EnabledImage is { } maskPixels)
             {
-                var restricted = Restrict(image, bounds, maskPixels, bounds, luminance: true);
+                // Effects run in the asset's pixel grid. An independent mask must first be mapped back
+                // from its document placement, rather than being attached to the layer again.
+                var layerToDocument = BrushEdits.PixelToDocument(layer.Transform, asset.Width, asset.Height);
+                if (!layerToDocument.TryInvert(out var documentToLayer))
+                {
+                    image.Erase(SKColors.Transparent);
+                    return image;
+                }
+                var maskToLayer = SKMatrix.Concat(documentToLayer,
+                    BrushEdits.PixelToDocument(layer.MaskTransform, maskPixels.Width, maskPixels.Height));
+                var restricted = RestrictMask(image, maskPixels, maskToLayer);
                 image.Dispose();
                 image = restricted;
             }
@@ -480,6 +490,17 @@ public static class DocumentRenderer
             return Mix(empty, content, 1f, clip, local, luminance ? Coverage.Gray : Coverage.Alpha);
         }
 
+        /// <summary>A mask's own pixels mapped into a render tile, including its rotation and flips.</summary>
+        private static SKMatrix MaskToPixels(SKBitmap mask, Model.LayerTransform transform, SKPointI origin) =>
+            SKMatrix.Concat(SKMatrix.CreateTranslation(-origin.X, -origin.Y),
+                BrushEdits.PixelToDocument(transform, mask.Width, mask.Height));
+
+        private static SKBitmap RestrictMask(SKBitmap content, SKBitmap mask, SKMatrix maskToPixels)
+        {
+            using var empty = Allocate(content.Width, content.Height);
+            return Mix(empty, content, 1f, mask, default, Coverage.Gray, maskToPixels);
+        }
+
         /// <summary>
         /// Per channel, <c>under + (over − under) · strength · coverage</c> on premultiplied bytes. This is
         /// the one shape a mask, a clip and an adjustment's opacity all take: a clip is this with nothing
@@ -491,7 +512,7 @@ public static class DocumentRenderer
         /// </para>
         /// </summary>
         private static SKBitmap Mix(SKBitmap under, SKBitmap over, float strength, SKBitmap? clip,
-            SKRectI clipInBitmaps, Coverage kind)
+            SKRectI clipInBitmaps, Coverage kind, SKMatrix? maskToPixels = null)
         {
             var width = under.Width;
             var height = under.Height;
@@ -500,6 +521,9 @@ public static class DocumentRenderer
             var overPixels = over.GetPixelSpan();
             var outPixels = result.GetPixelSpan();
             var clipPixels = clip is null ? Span<byte>.Empty : clip.GetPixelSpan();
+            var pixelsToMask = SKMatrix.Identity;
+            var mappedMask = maskToPixels.HasValue;
+            var invertible = !mappedMask || maskToPixels!.Value.TryInvert(out pixelsToMask);
             for (var y = 0; y < height; y++)
             {
                 for (var x = 0; x < width; x++)
@@ -507,21 +531,31 @@ public static class DocumentRenderer
                     var coverage = strength;
                     if (clip is not null)
                     {
-                        var cx = x - clipInBitmaps.Left;
-                        var cy = y - clipInBitmaps.Top;
-                        if (cx < 0 || cy < 0 || cx >= clipInBitmaps.Width || cy >= clipInBitmaps.Height)
+                        if (mappedMask)
                         {
-                            coverage = 0f;
-                        }
-                        else if (kind == Coverage.Gray)
-                        {
-                            var sx = Math.Clamp((cx * 2 + 1) * clip.Width / (clipInBitmaps.Width * 2), 0, clip.Width - 1);
-                            var sy = Math.Clamp((cy * 2 + 1) * clip.Height / (clipInBitmaps.Height * 2), 0, clip.Height - 1);
-                            coverage *= clipPixels[sy * clip.Width + sx] / 255f;
+                            var sample = pixelsToMask.MapPoint(x + 0.5f, y + 0.5f);
+                            coverage *= invertible && sample.X >= 0 && sample.Y >= 0
+                                && sample.X < clip.Width && sample.Y < clip.Height
+                                ? clipPixels[(int)sample.Y * clip.RowBytes + (int)sample.X] / 255f : 0f;
                         }
                         else
                         {
-                            coverage *= clipPixels[(cy * clip.Width + cx) * 4 + 3] / 255f;
+                            var cx = x - clipInBitmaps.Left;
+                            var cy = y - clipInBitmaps.Top;
+                            if (cx < 0 || cy < 0 || cx >= clipInBitmaps.Width || cy >= clipInBitmaps.Height)
+                            {
+                                coverage = 0f;
+                            }
+                            else if (kind == Coverage.Gray)
+                            {
+                                var sx = Math.Clamp((cx * 2 + 1) * clip.Width / (clipInBitmaps.Width * 2), 0, clip.Width - 1);
+                                var sy = Math.Clamp((cy * 2 + 1) * clip.Height / (clipInBitmaps.Height * 2), 0, clip.Height - 1);
+                                coverage *= clipPixels[sy * clip.RowBytes + sx] / 255f;
+                            }
+                            else
+                            {
+                                coverage *= clipPixels[cy * clip.RowBytes + cx * 4 + 3] / 255f;
+                            }
                         }
                     }
                     var at = (y * width + x) * 4;

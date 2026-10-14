@@ -1,0 +1,18 @@
+{
+  "Recover interrupted saves…": "恢复中断的保存…",
+  "Recover interrupted saves": "恢复中断的保存",
+  "Recover to a new folder…": "恢复到新文件夹…",
+  "Choose a saved copy to recover. The original project and recovery files will be kept. Choose a new destination in the next step.": "请选择要恢复的副本。原工程和恢复文件会保留，下一步请选择全新的保存位置。",
+  "Interrupted save": "中断时正在保存的版本",
+  "Previous saved version": "上一次保存的版本",
+  "{0} · {1}": "{0} · {1}",
+  "{0} × {1} pixels · {2}": "{0} × {1} 像素 · {2}",
+  "Interrupted saves found": "发现中断的保存",
+  "{0} recovery copies are available. Review them now? You can also use File → Recover interrupted saves later.": "发现 {0} 份可恢复副本。现在查看吗？稍后也可从“文件 → 恢复中断的保存”进入。",
+  "Review copies": "查看副本",
+  "Later": "稍后",
+  "No recoverable interrupted saves were found.": "未找到可恢复的中断保存。",
+  "Recover to a new project folder": "恢复到新的工程文件夹",
+  "Recovered to {0}. The original project and recovery copy were kept.": "已恢复到 {0}。原工程和恢复副本均已保留。",
+  "Could not recover the project: {0}": "无法恢复工程：{0}"
+}
